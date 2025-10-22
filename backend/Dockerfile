@@ -8,13 +8,16 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libgl1 \
+        libgl1-mesa-dri \
         libgl1-mesa-glx \
+        libglu1-mesa \
         libglib2.0-0 \
         libgomp1 \
         libsm6 \
         libxext6 \
         libxrender1 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && ldconfig
 
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir --default-timeout=${PIP_DEFAULT_TIMEOUT} -r requirements.txt
