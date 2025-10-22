@@ -20,7 +20,12 @@ RUN apt-get update \
     && ldconfig
 
 COPY requirements.txt /app/
-RUN pip install --no-cache-dir --default-timeout=${PIP_DEFAULT_TIMEOUT} -r requirements.txt
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+        torch==2.3.1+cpu \
+        torchvision==0.18.1+cpu \
+    && pip install --no-cache-dir --default-timeout=${PIP_DEFAULT_TIMEOUT} -r requirements.txt \
+    && pip uninstall -y opencv-python || true \
+    && pip install --no-cache-dir --force-reinstall opencv-python-headless==4.10.0.84
 
 COPY app /app/app
 EXPOSE 8000
