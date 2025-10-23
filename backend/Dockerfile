@@ -11,7 +11,6 @@ RUN apt-get update \
         libglvnd0 \
         libgl1 \
         libgl1-mesa-dri \
-        libgl1-mesa-glx \
         libglu1-mesa \
         libglib2.0-0 \
         libgomp1 \
