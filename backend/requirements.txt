@@ -1,3 +1,4 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
 fastapi==0.115.5
 uvicorn[standard]==0.30.6
 psycopg2-binary>=2.9.9,<2.9.11
@@ -5,6 +6,8 @@ SQLAlchemy>=2.0.35,<2.1
 pydantic==2.9.2
 python-dotenv==1.0.1
 opencv-python-headless==4.10.0.84
+torch==2.3.1+cpu
+torchvision==0.18.1+cpu
 ultralytics==8.3.44
 numpy==1.26.4
 websockets==13.1
