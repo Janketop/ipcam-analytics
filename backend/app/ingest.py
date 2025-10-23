@@ -30,21 +30,33 @@ class IngestWorker(Thread):
         self.phone_active_until = None
 
     def run(self):
-        cap = cv2.VideoCapture(self.url)
-        if not cap.isOpened():
-            print(f"[{self.name}] не удалось открыть поток")
-            return
-
-        _ = cap.read()
-
-        fps_skip = 2  # обрабатываем каждый 2-й кадр
-        frame_id = 0
+        reconnect_delay = float(os.getenv("RTSP_RECONNECT_DELAY", "5"))
+        max_failed_reads = int(os.getenv("RTSP_MAX_FAILED_READS", "25"))
 
         while not self.stop_flag:
-            ok, frame = cap.read()
-            if not ok:
-                time.sleep(0.2)
+            cap = cv2.VideoCapture(self.url)
+            if not cap.isOpened():
+                print(f"[{self.name}] не удалось открыть поток, повтор через {reconnect_delay} с")
+                cap.release()
+                time.sleep(reconnect_delay)
                 continue
+
+            _ = cap.read()
+
+            fps_skip = 2  # обрабатываем каждый 2-й кадр
+            frame_id = 0
+            failed_reads = 0
+
+            while not self.stop_flag:
+                ok, frame = cap.read()
+                if not ok:
+                    failed_reads += 1
+                    if failed_reads >= max_failed_reads:
+                        print(f"[{self.name}] потеряно соединение, переподключаюсь через {reconnect_delay} с")
+                        break
+                    time.sleep(0.2)
+                    continue
+                failed_reads = 0
             frame_id += 1
             if frame_id % fps_skip != 0:
                 continue
@@ -77,8 +89,9 @@ class IngestWorker(Thread):
                                 {"c": self.cam_id, "t": ev_type, "s": now, "conf": float(conf), "u": snap_url})
                 if self.broadcaster:
                     asyncio.run(self.broadcaster({"camera": self.name, "type": ev_type, "ts": now.isoformat(), "confidence": float(conf), "snapshot_url": snap_url}))
-
-        cap.release()
+            cap.release()
+            if not self.stop_flag:
+                time.sleep(reconnect_delay)
 
     def get_visual_frame_jpeg(self):
         """Возвращает последний сохранённый визуализированный кадр в формате JPEG."""
