@@ -1,18 +1,28 @@
 #!/bin/sh
-set -e
+set -eu
 
 cd /app
 
-if [ ! -x node_modules/.bin/next ]; then
-  echo "[frontend] node_modules missing or Next.js binary unavailable, installing dependencies..."
+log() {
+  printf '[frontend] %s\n' "$1"
+}
+
+log "Обновляю зависимости npm перед запуском дев-сервера"
+if [ -d node_modules ]; then
+  log "Удаляю старый каталог node_modules, чтобы пересобрать зависимости"
   rm -rf node_modules
-  if [ -f package-lock.json ]; then
-    npm ci
-  else
-    npm install
-  fi
-else
-  echo "[frontend] Reusing existing node_modules cache"
 fi
 
+if [ -f package-lock.json ]; then
+  npm ci --no-audit --no-fund
+else
+  npm install --no-audit --no-fund
+fi
+
+if [ ! -x node_modules/.bin/next ]; then
+  log "Не нашёл бинарник Next.js после установки зависимостей"
+  exit 1
+fi
+
+log "Зависимости готовы, запускаю команду: $*"
 exec "$@"

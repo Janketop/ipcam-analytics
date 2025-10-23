@@ -1,0 +1,4 @@
+# Constrain heavy dependencies to CPU-only builds available from the PyTorch index
+# Using the +cpu variants avoids downloading large CUDA wheels during image builds.
+torch==2.3.1+cpu
+torchvision==0.18.1+cpu
