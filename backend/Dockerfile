@@ -7,16 +7,20 @@ WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        libglvnd0 \
         libgl1 \
         libgl1-mesa-dri \
         libgl1-mesa-glx \
         libglu1-mesa \
         libglib2.0-0 \
         libgomp1 \
+        libice6 \
         libsm6 \
         libxext6 \
         libxrender1 \
     && rm -rf /var/lib/apt/lists/* \
+    && ldconfig \
+    && ldconfig -p | grep -q "libGL.so.1"
     && ldconfig
 
 COPY requirements.txt /app/
