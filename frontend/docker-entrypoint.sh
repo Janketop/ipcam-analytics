@@ -11,6 +11,7 @@ log "Обновляю зависимости npm перед запуском д�
 
 LOCK_FILE="package-lock.json"
 HASH_FILE="node_modules/.package-lock.hash"
+NEXT_BIN="node_modules/.bin/next"
 NEEDS_INSTALL=0
 
 if [ ! -d node_modules ]; then
@@ -35,6 +36,11 @@ else
   NEEDS_INSTALL=1
 fi
 
+if [ "$NEEDS_INSTALL" -eq 0 ] && [ -d node_modules ] && [ ! -x "$NEXT_BIN" ]; then
+  log "Бинарник Next.js отсутствует, несмотря на кеш — переустанавливаю зависимости"
+  NEEDS_INSTALL=1
+fi
+
 if [ "$NEEDS_INSTALL" -eq 1 ]; then
   if [ -f "$LOCK_FILE" ]; then
     npm ci --no-audit --no-fund
@@ -46,7 +52,7 @@ if [ "$NEEDS_INSTALL" -eq 1 ]; then
   fi
 fi
 
-if [ ! -x node_modules/.bin/next ]; then
+if [ ! -x "$NEXT_BIN" ]; then
   log "Не нашёл бинарник Next.js после установки зависимостей"
   exit 1
 fi
