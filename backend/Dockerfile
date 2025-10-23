@@ -21,6 +21,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && ldconfig \
     && ldconfig -p | grep -q "libGL.so.1"
+    && ldconfig
 
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
