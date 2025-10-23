@@ -31,7 +31,6 @@ services:
     volumes:
       - ./frontend:/app
       - /app/node_modules
-    command: sh -c "npm install && npx next dev -p 3000"
 
 volumes:
   dbdata:
