@@ -18,16 +18,14 @@ RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "7"))
 app = FastAPI(title="IPCam Analytics (RU)")
 
 frontend_origins = os.getenv("FRONTEND_ORIGINS") or os.getenv("FRONTEND_URL") or ""
-allow_origins = [origin.strip() for origin in frontend_origins.split(",") if origin.strip()]
-if not allow_origins:
-    allow_origins = []
-
-if "http://localhost:3000" not in allow_origins:
-    allow_origins.append("http://localhost:3000")
+allow_origins = {origin.strip() for origin in frontend_origins.split(",") if origin.strip()}
+default_origins = {"http://localhost:3000", "http://127.0.0.1:3000"}
+allow_origins.update(default_origins)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allow_origins,
+    allow_origins=sorted(allow_origins),
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
