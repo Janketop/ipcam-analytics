@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import List
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -15,6 +16,21 @@ FACE_BLUR = os.getenv("FACE_BLUR", "true").lower() == "true"
 RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "7"))
 
 app = FastAPI(title="IPCam Analytics (RU)")
+
+frontend_origins = os.getenv("FRONTEND_ORIGINS") or os.getenv("FRONTEND_URL") or ""
+allow_origins = [origin.strip() for origin in frontend_origins.split(",") if origin.strip()]
+if not allow_origins:
+    allow_origins = []
+
+if "http://localhost:3000" not in allow_origins:
+    allow_origins.append("http://localhost:3000")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allow_origins,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 engine = get_engine()
 ingest = IngestManager(engine)
