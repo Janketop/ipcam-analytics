@@ -30,55 +30,73 @@ class IngestWorker(Thread):
         self.phone_active_until = None
 
     def run(self):
-        cap = cv2.VideoCapture(self.url)
-        if not cap.isOpened():
-            print(f"[{self.name}] не удалось открыть поток")
-            return
-
-        _ = cap.read()
-
-        fps_skip = 2  # обрабатываем каждый 2-й кадр
-        frame_id = 0
+        reconnect_delay = float(os.getenv("RTSP_RECONNECT_DELAY", "5"))
+        max_failed_reads = int(os.getenv("RTSP_MAX_FAILED_READS", "25"))
 
         while not self.stop_flag:
-            ok, frame = cap.read()
-            if not ok:
-                time.sleep(0.2)
+            cap = cv2.VideoCapture(self.url)
+            if not cap.isOpened():
+                print(f"[{self.name}] не удалось открыть поток, повтор через {reconnect_delay} с")
+                cap.release()
+                time.sleep(reconnect_delay)
                 continue
-            frame_id += 1
-            if frame_id % fps_skip != 0:
-                continue
 
-            phone_usage, conf, snapshot, vis = self.process_frame(frame)
+            fps_skip = 2  # обрабатываем каждый 2-й кадр
+            frame_id = 0
+            failed_reads = 0
+            reconnect_needed = False
 
-            now = datetime.now(timezone.utc)
-            ev_type = None
-            if phone_usage:
-                self.phone_active_until = now + timedelta(seconds=5)
-                ev_type = "PHONE_USAGE"
-            else:
-                if self.phone_active_until and now > self.phone_active_until:
-                    # TODO: логика NOT_WORKING по окну времени
-                    pass
+            while not self.stop_flag:
+                ok, frame = cap.read()
+                if not ok:
+                    failed_reads += 1
+                    if failed_reads >= max_failed_reads:
+                        reconnect_needed = True
+                        print(f"[{self.name}] потеряно соединение, переподключаюсь через {reconnect_delay} с")
+                        break
+                    time.sleep(0.2)
+                    continue
 
-            # Обновляем live-кадр
-            if self.visualize and vis is not None:
-                try:
-                    ret, buf = cv2.imencode('.jpg', vis, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-                    if ret:
-                        self.last_visual_jpeg = buf.tobytes()
-                except Exception:
-                    pass
+                failed_reads = 0
+                frame_id += 1
+                if frame_id % fps_skip != 0:
+                    continue
 
-            if ev_type:
-                snap_url = self.save_snapshot(snapshot, now)
-                with self.engine.begin() as con:
-                    con.execute(text("INSERT INTO events(camera_id,type,start_ts,confidence,snapshot_url,meta) VALUES (:c,:t,:s,:conf,:u,'{}')"),
-                                {"c": self.cam_id, "t": ev_type, "s": now, "conf": float(conf), "u": snap_url})
-                if self.broadcaster:
-                    asyncio.run(self.broadcaster({"camera": self.name, "type": ev_type, "ts": now.isoformat(), "confidence": float(conf), "snapshot_url": snap_url}))
+                phone_usage, conf, snapshot, vis = self.process_frame(frame)
 
-        cap.release()
+                now = datetime.now(timezone.utc)
+                ev_type = None
+                if phone_usage:
+                    self.phone_active_until = now + timedelta(seconds=5)
+                    ev_type = "PHONE_USAGE"
+                else:
+                    if self.phone_active_until and now > self.phone_active_until:
+                        # TODO: логика NOT_WORKING по окну времени
+                        pass
+
+                # Обновляем live-кадр
+                if self.visualize and vis is not None:
+                    try:
+                        ret, buf = cv2.imencode('.jpg', vis, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                        if ret:
+                            self.last_visual_jpeg = buf.tobytes()
+                    except Exception:
+                        pass
+
+                if ev_type:
+                    snap_url = self.save_snapshot(snapshot, now)
+                    with self.engine.begin() as con:
+                        con.execute(text("INSERT INTO events(camera_id,type,start_ts,confidence,snapshot_url,meta) VALUES (:c,:t,:s,:conf,:u,'{}')"),
+                                    {"c": self.cam_id, "t": ev_type, "s": now, "conf": float(conf), "u": snap_url})
+                    if self.broadcaster:
+                        asyncio.run(self.broadcaster({"camera": self.name, "type": ev_type, "ts": now.isoformat(), "confidence": float(conf), "snapshot_url": snap_url}))
+
+            cap.release()
+            if self.stop_flag:
+                break
+
+            if reconnect_needed:
+                time.sleep(reconnect_delay)
 
     def get_visual_frame_jpeg(self):
         """Возвращает последний сохранённый визуализированный кадр в формате JPEG."""
