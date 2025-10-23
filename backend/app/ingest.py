@@ -80,6 +80,10 @@ class IngestWorker(Thread):
 
         cap.release()
 
+    def get_visual_frame_jpeg(self):
+        """Возвращает последний сохранённый визуализированный кадр в формате JPEG."""
+        return self.last_visual_jpeg
+
     def process_frame(self, frame):
         det_res = self.det(frame, imgsz=640, conf=0.3)[0]
         if self.phone_idx is None:
