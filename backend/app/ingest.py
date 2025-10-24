@@ -69,28 +69,34 @@ class IngestWorker(Thread):
                     continue
 
                 # сброс накопленных кадров, чтобы обрабатывать самый свежий
-                latest_frame = frame
-                flush_failed = False
                 flush_start = time.time()
                 flush_timeout = 0.2
+                grabbed_any = False
                 while time.time() - flush_start < flush_timeout:
-                    ok_flush, next_frame = cap.read()
-                    if not ok_flush:
+                    ok_grab = cap.grab()
+                    if not ok_grab:
                         failed_reads += 1
                         if failed_reads >= max_failed_reads:
                             reconnect_needed = True
                             print(f"[{self.name}] потеряно соединение, переподключаюсь через {reconnect_delay} с")
                             break
-                        flush_failed = True
                         time.sleep(0.2)
                         break
-                    latest_frame = next_frame
+                    grabbed_any = True
                 if reconnect_needed:
                     break
-                if flush_failed:
-                    continue
 
-                frame = latest_frame
+                if grabbed_any:
+                    ok_retrieve, latest_frame = cap.retrieve()
+                    if not ok_retrieve:
+                        failed_reads += 1
+                        if failed_reads >= max_failed_reads:
+                            reconnect_needed = True
+                            print(f"[{self.name}] потеряно соединение, переподключаюсь через {reconnect_delay} с")
+                            break
+                        time.sleep(0.2)
+                        continue
+                    frame = latest_frame
 
                 phone_usage, conf, snapshot, vis = self.process_frame(frame)
 
