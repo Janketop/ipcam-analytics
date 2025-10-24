@@ -65,7 +65,7 @@ def list_cameras():
 
 @app.get("/events")
 def list_events(limit: int = 200, type: str | None = None):
-    q = "SELECT e.id, e.type, e.start_ts, e.end_ts, e.confidence, e.snapshot_url, c.name AS camera FROM events e JOIN cameras c ON e.camera_id = c.id "
+    q = "SELECT e.id, e.type, e.start_ts, e.end_ts, e.confidence, e.snapshot_url, e.meta, c.name AS camera FROM events e JOIN cameras c ON e.camera_id = c.id "
     if type:
         q += " WHERE e.type=:t "
     q += " ORDER BY e.start_ts DESC LIMIT :lim"
