@@ -6,6 +6,10 @@ from sqlalchemy import text
 import numpy as np
 from PIL import Image
 from ultralytics import YOLO
+try:
+    import torch
+except Exception:  # pragma: no cover - torch may be unavailable in tests
+    torch = None
 
 PHONE_CLASS = 'cell phone'
 
@@ -42,6 +46,25 @@ def env_float(name: str, default: float, min_value: Optional[float] = None) -> f
     return value
 
 
+def resolve_device(preferred: Optional[str] = None) -> str:
+    """Выбираем устройство для инференса: GPU, если доступно, иначе CPU."""
+    if preferred and preferred.strip().lower() not in {"auto", ""}:
+        return preferred
+
+    # auto-режим: сначала CUDA, затем Apple MPS, в конце CPU
+    if torch is not None:
+        if torch.cuda.is_available():
+            cuda_env = os.getenv("CUDA_VISIBLE_DEVICES")
+            if cuda_env:
+                first = cuda_env.split(",")[0].strip()
+                if first:
+                    return first if first.startswith("cuda") else f"cuda:{first}"
+            return "cuda:0"
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
+    return "cpu"
+
+
 class IngestWorker(Thread):
     def __init__(self, engine, cam_id, name, rtsp_url, face_blur=True, broadcaster=None):
         super().__init__(daemon=True)
@@ -58,7 +81,7 @@ class IngestWorker(Thread):
 
         det_weights = os.getenv("YOLO_DET_MODEL", "yolov8n.pt")
         pose_weights = os.getenv("YOLO_POSE_MODEL", "yolov8n-pose.pt")
-        self.device = os.getenv("YOLO_DEVICE", "cpu")
+        self.device = resolve_device(os.getenv("YOLO_DEVICE"))
 
         # Lightweight модели
         self.det = YOLO(det_weights)
@@ -69,6 +92,9 @@ class IngestWorker(Thread):
         except Exception:
             # Оставляем модели на устройстве по умолчанию, если перевод не поддерживается
             pass
+
+        # аргумент device для прямых вызовов модели; ultralytics принимает 'cuda:0' и т.п.
+        self.predict_device = None if self.device in {"cpu", "auto"} else self.device
 
         self.det_imgsz = env_int("YOLO_IMAGE_SIZE", 640, min_value=32)
         self.phone_idx = None
@@ -185,7 +211,10 @@ class IngestWorker(Thread):
         return self.last_visual_jpeg
 
     def process_frame(self, frame):
-        det_res = self.det(frame, imgsz=self.det_imgsz, conf=0.3)[0]
+        det_kwargs = {"imgsz": self.det_imgsz, "conf": 0.3}
+        if self.predict_device:
+            det_kwargs["device"] = self.predict_device
+        det_res = self.det(frame, **det_kwargs)[0]
         if self.phone_idx is None:
             names = self.det.model.names if hasattr(self.det.model, "names") else self.det.names
             self.phone_idx = [k for k,v in names.items() if v == PHONE_CLASS][0]
@@ -195,7 +224,10 @@ class IngestWorker(Thread):
             if int(b.cls[0]) == self.phone_idx:
                 phones.append(b.xyxy[0].cpu().numpy())
 
-        pose_res = self.pose(frame, imgsz=self.det_imgsz, conf=0.3)[0]
+        pose_kwargs = {"imgsz": self.det_imgsz, "conf": 0.3}
+        if self.predict_device:
+            pose_kwargs["device"] = self.predict_device
+        pose_res = self.pose(frame, **pose_kwargs)[0]
         phone_usage = False
         best_conf = 0.0
 
