@@ -97,6 +97,12 @@ class IngestWorker(Thread):
         self.predict_device = None if self.device in {"cpu", "auto"} else self.device
 
         self.det_imgsz = env_int("YOLO_IMAGE_SIZE", 640, min_value=32)
+        self.det_conf = env_float("PHONE_DET_CONF", 0.3, min_value=0.05)
+        self.pose_conf = env_float("POSE_DET_CONF", 0.3, min_value=0.05)
+        self.phone_score_threshold = env_float("PHONE_SCORE_THRESHOLD", 0.6, min_value=0.1)
+        self.phone_hand_dist_ratio = env_float("PHONE_HAND_DIST_RATIO", 0.35, min_value=0.05)
+        self.phone_head_dist_ratio = env_float("PHONE_HEAD_DIST_RATIO", 0.45, min_value=0.05)
+
         self.phone_idx = None
 
         self.phone_active_until = None
@@ -211,20 +217,40 @@ class IngestWorker(Thread):
         return self.last_visual_jpeg
 
     def process_frame(self, frame):
-        det_kwargs = {"imgsz": self.det_imgsz, "conf": 0.3}
+        det_kwargs = {"imgsz": self.det_imgsz, "conf": self.det_conf}
         if self.predict_device:
             det_kwargs["device"] = self.predict_device
         det_res = self.det(frame, **det_kwargs)[0]
         if self.phone_idx is None:
-            names = self.det.model.names if hasattr(self.det.model, "names") else self.det.names
-            self.phone_idx = [k for k,v in names.items() if v == PHONE_CLASS][0]
+            names = getattr(self.det.model, "names", None) or getattr(self.det, "names", {})
+            for k, v in names.items():
+                if v == PHONE_CLASS:
+                    self.phone_idx = int(k)
+                    break
 
         phones = []
-        for b in det_res.boxes:
-            if int(b.cls[0]) == self.phone_idx:
-                phones.append(b.xyxy[0].cpu().numpy())
+        boxes = getattr(det_res, "boxes", None)
+        if boxes is not None:
+            for b in boxes:
+                try:
+                    cls_idx = int(b.cls[0])
+                except Exception:
+                    continue
+                if self.phone_idx is None or cls_idx != self.phone_idx:
+                    continue
+                conf = float(b.conf[0]) if getattr(b, "conf", None) is not None else 0.0
+                if conf < self.det_conf:
+                    continue
+                xyxy = b.xyxy[0].cpu().numpy()
+                cx = float((xyxy[0] + xyxy[2]) * 0.5)
+                cy = float((xyxy[1] + xyxy[3]) * 0.5)
+                phones.append({
+                    "bbox": xyxy,
+                    "center": np.array([cx, cy], dtype=np.float32),
+                    "conf": conf,
+                })
 
-        pose_kwargs = {"imgsz": self.det_imgsz, "conf": 0.3}
+        pose_kwargs = {"imgsz": self.det_imgsz, "conf": self.pose_conf}
         if self.predict_device:
             pose_kwargs["device"] = self.predict_device
         pose_res = self.pose(frame, **pose_kwargs)[0]
@@ -235,7 +261,16 @@ class IngestWorker(Thread):
         need_overlay = self.visualize
         vis = frame.copy() if need_overlay else None
 
-        for kpts, bbox in zip(pose_res.keypoints.xy.cpu().numpy(), pose_res.boxes.xyxy.cpu().numpy()):
+        if pose_res.boxes is None or pose_res.keypoints is None:
+            people_iter = []
+        else:
+            kpts_xy = pose_res.keypoints.xy.cpu().numpy()
+            kpts_conf = None
+            if getattr(pose_res.keypoints, "conf", None) is not None:
+                kpts_conf = pose_res.keypoints.conf.cpu().numpy()
+            people_iter = zip(kpts_xy, pose_res.boxes.xyxy.cpu().numpy(), kpts_conf if kpts_conf is not None else [None] * len(kpts_xy))
+
+        for kpts, bbox, kconf in people_iter:
             # наклон головы (приближение)
             try:
                 le = kpts[1]; re = kpts[2]
@@ -243,23 +278,63 @@ class IngestWorker(Thread):
             except Exception:
                 head_tilt = 0.0
 
-            # близость телефона к зоне рук
-            near = False
-            for (x1,y1,x2,y2) in phones:
-                hx1, hy1 = bbox[0], bbox[1] + (bbox[3]-bbox[1]) * 0.5
-                hx2, hy2 = bbox[2], bbox[3]
-                inter_w = max(0, min(x2, hx2) - max(x1, hx1))
-                inter_h = max(0, min(y2, hy2) - max(y1, hy1))
-                if inter_w*inter_h > 0:
-                    near = True
-                    break
+            bbox_h = max(1.0, float(bbox[3] - bbox[1]))
 
-            score = 0.0
-            if near: score += 0.6
-            if head_tilt > 0.25: score += 0.4
-            if score > 0.6:
-                phone_usage = True
-                best_conf = max(best_conf, score)
+            # подготовка ключевых точек рук и головы
+            def point_valid(idx, conf_threshold=0.2):
+                if idx >= len(kpts):
+                    return False
+                if kconf is None or idx >= len(kconf):
+                    return True
+                return kconf[idx] >= conf_threshold
+
+            wrists = []
+            for wrist_idx in (9, 10):
+                if point_valid(wrist_idx):
+                    wrists.append(np.array(kpts[wrist_idx], dtype=np.float32))
+
+            head_points = []
+            for head_idx in (0, 1, 2):
+                if point_valid(head_idx):
+                    head_points.append(np.array(kpts[head_idx], dtype=np.float32))
+
+            head_center = np.mean(head_points, axis=0) if head_points else None
+
+            for phone in phones:
+                near_hand = False
+                if wrists:
+                    dists = [np.linalg.norm(phone["center"] - wrist) for wrist in wrists]
+                    if dists:
+                        rel = min(dists) / bbox_h
+                        near_hand = rel <= self.phone_hand_dist_ratio
+
+                near_head = False
+                if head_center is not None:
+                    rel_head = np.linalg.norm(phone["center"] - head_center) / bbox_h
+                    near_head = rel_head <= self.phone_head_dist_ratio
+
+                score = 0.0
+                if near_hand:
+                    score += 0.6
+                if near_head:
+                    score += 0.2
+                if head_tilt > 0.25:
+                    score += 0.1
+                score += min(phone["conf"], 1.0) * 0.1
+
+                if score >= self.phone_score_threshold:
+                    phone_usage = True
+                    best_conf = max(best_conf, score)
+
+                if need_overlay:
+                    cx, cy = map(int, phone["center"])
+                    color = (0, 0, 255) if score >= self.phone_score_threshold else (0, 165, 255)
+                    cv2.circle(vis, (cx, cy), 6, color, -1)
+                    if wrists:
+                        closest = min(wrists, key=lambda p: np.linalg.norm(phone["center"] - p))
+                        cv2.line(vis, (cx, cy), tuple(map(int, closest)), color, 2)
+                    if head_center is not None:
+                        cv2.line(vis, (cx, cy), tuple(map(int, head_center)), (200, 50, 200), 1)
 
             # рисуем bbox и скелет
             if need_overlay:
@@ -276,9 +351,10 @@ class IngestWorker(Thread):
 
         # рамки телефонов и подписи
         if need_overlay:
-            for (x1,y1,x2,y2) in phones:
+            for phone in phones:
+                x1,y1,x2,y2 = phone["bbox"]
                 cv2.rectangle(vis, (int(x1),int(y1)), (int(x2),int(y2)), (0,255,255), 2)
-                cv2.putText(vis, 'PHONE', (int(x1), int(y1)-5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 2)
+                cv2.putText(vis, f'PHONE {phone["conf"]:.2f}', (int(x1), int(y1)-5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 2)
 
         if phone_usage and self.visualize and vis is not None:
             cv2.putText(vis, f'PHONE_USAGE ({best_conf:.2f})', (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
