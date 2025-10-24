@@ -1,12 +1,69 @@
 import os, cv2, time, asyncio
+from typing import Optional
 from datetime import datetime, timezone, timedelta
 from threading import Thread
 from sqlalchemy import text
 import numpy as np
 from PIL import Image
 from ultralytics import YOLO
+try:
+    import torch
+except Exception:  # pragma: no cover - torch may be unavailable in tests
+    torch = None
 
 PHONE_CLASS = 'cell phone'
+
+def env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_int(name: str, default: int, min_value: Optional[int] = None) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    if min_value is not None:
+        value = max(value, min_value)
+    return value
+
+
+def env_float(name: str, default: float, min_value: Optional[float] = None) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if min_value is not None:
+        value = max(value, min_value)
+    return value
+
+
+def resolve_device(preferred: Optional[str] = None) -> str:
+    """Выбираем устройство для инференса: GPU, если доступно, иначе CPU."""
+    if preferred and preferred.strip().lower() not in {"auto", ""}:
+        return preferred
+
+    # auto-режим: сначала CUDA, затем Apple MPS, в конце CPU
+    if torch is not None:
+        if torch.cuda.is_available():
+            cuda_env = os.getenv("CUDA_VISIBLE_DEVICES")
+            if cuda_env:
+                first = cuda_env.split(",")[0].strip()
+                if first:
+                    return first if first.startswith("cuda") else f"cuda:{first}"
+            return "cuda:0"
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
+    return "cpu"
+
 
 class IngestWorker(Thread):
     def __init__(self, engine, cam_id, name, rtsp_url, face_blur=True, broadcaster=None):
@@ -19,19 +76,36 @@ class IngestWorker(Thread):
         self.broadcaster = broadcaster
         self.stop_flag = False
 
-        self.visualize = os.getenv("VISUALIZE","true").lower()=="true"
+        self.visualize = env_flag("VISUALIZE", False)
         self.last_visual_jpeg = None
 
+        det_weights = os.getenv("YOLO_DET_MODEL", "yolov8n.pt")
+        pose_weights = os.getenv("YOLO_POSE_MODEL", "yolov8n-pose.pt")
+        self.device = resolve_device(os.getenv("YOLO_DEVICE"))
+
         # Lightweight модели
-        self.det = YOLO("yolov8n.pt")
-        self.pose = YOLO("yolov8n-pose.pt")
+        self.det = YOLO(det_weights)
+        self.pose = YOLO(pose_weights)
+        try:
+            self.det.to(self.device)
+            self.pose.to(self.device)
+        except Exception:
+            # Оставляем модели на устройстве по умолчанию, если перевод не поддерживается
+            pass
+
+        # аргумент device для прямых вызовов модели; ultralytics принимает 'cuda:0' и т.п.
+        self.predict_device = None if self.device in {"cpu", "auto"} else self.device
+
+        self.det_imgsz = env_int("YOLO_IMAGE_SIZE", 640, min_value=32)
         self.phone_idx = None
 
         self.phone_active_until = None
 
     def run(self):
-        reconnect_delay = float(os.getenv("RTSP_RECONNECT_DELAY", "5"))
-        max_failed_reads = int(os.getenv("RTSP_MAX_FAILED_READS", "25"))
+        reconnect_delay = env_float("RTSP_RECONNECT_DELAY", 5.0, min_value=0.5)
+        max_failed_reads = env_int("RTSP_MAX_FAILED_READS", 25, min_value=1)
+        fps_skip = env_int("INGEST_FPS_SKIP", 2, min_value=1)
+        flush_timeout = env_float("INGEST_FLUSH_TIMEOUT", 0.2, min_value=0.0)
 
         while not self.stop_flag:
             cap = cv2.VideoCapture(self.url)
@@ -47,7 +121,6 @@ class IngestWorker(Thread):
                 time.sleep(reconnect_delay)
                 continue
 
-            fps_skip = 2  # обрабатываем каждый 2-й кадр
             frame_id = 0
             failed_reads = 0
             reconnect_needed = False
@@ -70,7 +143,6 @@ class IngestWorker(Thread):
 
                 # сброс накопленных кадров, чтобы обрабатывать самый свежий
                 flush_start = time.time()
-                flush_timeout = 0.2
                 grabbed_any = False
                 while time.time() - flush_start < flush_timeout:
                     ok_grab = cap.grab()
@@ -139,7 +211,10 @@ class IngestWorker(Thread):
         return self.last_visual_jpeg
 
     def process_frame(self, frame):
-        det_res = self.det(frame, imgsz=640, conf=0.3)[0]
+        det_kwargs = {"imgsz": self.det_imgsz, "conf": 0.3}
+        if self.predict_device:
+            det_kwargs["device"] = self.predict_device
+        det_res = self.det(frame, **det_kwargs)[0]
         if self.phone_idx is None:
             names = self.det.model.names if hasattr(self.det.model, "names") else self.det.names
             self.phone_idx = [k for k,v in names.items() if v == PHONE_CLASS][0]
@@ -149,12 +224,16 @@ class IngestWorker(Thread):
             if int(b.cls[0]) == self.phone_idx:
                 phones.append(b.xyxy[0].cpu().numpy())
 
-        pose_res = self.pose(frame, imgsz=640, conf=0.3)[0]
+        pose_kwargs = {"imgsz": self.det_imgsz, "conf": 0.3}
+        if self.predict_device:
+            pose_kwargs["device"] = self.predict_device
+        pose_res = self.pose(frame, **pose_kwargs)[0]
         phone_usage = False
         best_conf = 0.0
 
         # визуализируем на копии
-        vis = frame.copy()
+        need_overlay = self.visualize
+        vis = frame.copy() if need_overlay else None
 
         for kpts, bbox in zip(pose_res.keypoints.xy.cpu().numpy(), pose_res.boxes.xyxy.cpu().numpy()):
             # наклон головы (приближение)
@@ -183,27 +262,30 @@ class IngestWorker(Thread):
                 best_conf = max(best_conf, score)
 
             # рисуем bbox и скелет
-            x1,y1,x2,y2 = map(int, bbox)
-            cv2.rectangle(vis, (x1,y1), (x2,y2), (0,255,0), 2)
-            cv2.putText(vis, 'PERSON', (x1, y1-6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
-            # скелет (несколько связей)
-            pairs = [(5,7),(7,9),(6,8),(8,10),(5,6),(11,12),(11,13),(13,15),(12,14),(14,16)]
-            for (i,j) in pairs:
-                if i < len(kpts) and j < len(kpts):
-                    p1 = tuple(map(int, kpts[i]))
-                    p2 = tuple(map(int, kpts[j]))
-                    cv2.line(vis, p1, p2, (255,0,0), 2)
+            if need_overlay:
+                x1,y1,x2,y2 = map(int, bbox)
+                cv2.rectangle(vis, (x1,y1), (x2,y2), (0,255,0), 2)
+                cv2.putText(vis, 'PERSON', (x1, y1-6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
+                # скелет (несколько связей)
+                pairs = [(5,7),(7,9),(6,8),(8,10),(5,6),(11,12),(11,13),(13,15),(12,14),(14,16)]
+                for (i,j) in pairs:
+                    if i < len(kpts) and j < len(kpts):
+                        p1 = tuple(map(int, kpts[i]))
+                        p2 = tuple(map(int, kpts[j]))
+                        cv2.line(vis, p1, p2, (255,0,0), 2)
 
         # рамки телефонов и подписи
-        for (x1,y1,x2,y2) in phones:
-            cv2.rectangle(vis, (int(x1),int(y1)), (int(x2),int(y2)), (0,255,255), 2)
-            cv2.putText(vis, 'PHONE', (int(x1), int(y1)-5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 2)
+        if need_overlay:
+            for (x1,y1,x2,y2) in phones:
+                cv2.rectangle(vis, (int(x1),int(y1)), (int(x2),int(y2)), (0,255,255), 2)
+                cv2.putText(vis, 'PHONE', (int(x1), int(y1)-5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 2)
 
-        if phone_usage:
+        if phone_usage and self.visualize and vis is not None:
             cv2.putText(vis, f'PHONE_USAGE ({best_conf:.2f})', (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
 
         # snapshot (опционально размываем лица)
-        snap = vis.copy() if self.visualize else frame.copy()
+        snap_src = vis if self.visualize and vis is not None else frame
+        snap = snap_src.copy()
         if self.face_blur:
             try:
                 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
@@ -216,7 +298,7 @@ class IngestWorker(Thread):
             except Exception:
                 pass
 
-        return phone_usage, best_conf, snap, vis
+        return phone_usage, best_conf, snap, vis if self.visualize else None
 
     def save_snapshot(self, img_bgr, ts):
         out_dir = "/app/app/static/snaps"
@@ -239,8 +321,16 @@ class IngestManager:
         from sqlalchemy import text
         with self.engine.connect() as con:
             cams = con.execute(text("SELECT id,name,rtsp_url FROM cameras WHERE active=true")).mappings().all()
+        face_blur = env_flag("FACE_BLUR", False)
         for c in cams:
-            w = IngestWorker(self.engine, c["id"], c["name"], c["rtsp_url"], face_blur=os.getenv("FACE_BLUR","true").lower()=="true", broadcaster=self.broadcaster)
+            w = IngestWorker(
+                self.engine,
+                c["id"],
+                c["name"],
+                c["rtsp_url"],
+                face_blur=face_blur,
+                broadcaster=self.broadcaster,
+            )
             w.start()
             self.workers.append(w)
 
