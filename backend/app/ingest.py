@@ -1,10 +1,10 @@
 import os, cv2, time, asyncio
 from typing import Optional
+from collections import deque
 from datetime import datetime, timezone, timedelta
 from threading import Thread
 from sqlalchemy import text
 import numpy as np
-from PIL import Image
 from ultralytics import YOLO
 try:
     import torch
@@ -102,10 +102,25 @@ class IngestWorker(Thread):
         self.phone_score_threshold = env_float("PHONE_SCORE_THRESHOLD", 0.6, min_value=0.1)
         self.phone_hand_dist_ratio = env_float("PHONE_HAND_DIST_RATIO", 0.35, min_value=0.05)
         self.phone_head_dist_ratio = env_float("PHONE_HEAD_DIST_RATIO", 0.45, min_value=0.05)
+        self.pose_only_score_threshold = env_float("POSE_ONLY_SCORE_THRESHOLD", 0.55, min_value=0.1)
+        self.pose_only_head_ratio = env_float("POSE_ONLY_HEAD_RATIO", 0.5, min_value=0.05)
+        self.pose_wrists_dist_ratio = env_float("POSE_WRISTS_DIST_RATIO", 0.25, min_value=0.05)
+        self.pose_tilt_threshold = env_float("POSE_TILT_THRESHOLD", 0.22, min_value=0.05)
+        self.score_smoothing = env_int("PHONE_SCORE_SMOOTHING", 5, min_value=1)
 
         self.phone_idx = None
 
         self.phone_active_until = None
+        self.score_buffer = deque(maxlen=self.score_smoothing)
+
+        self.face_cascade = None
+        if self.face_blur:
+            try:
+                cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+                if os.path.exists(cascade_path):
+                    self.face_cascade = cv2.CascadeClassifier(cascade_path)
+            except Exception:
+                self.face_cascade = None
 
     def run(self):
         reconnect_delay = env_float("RTSP_RECONNECT_DELAY", 5.0, min_value=0.5)
@@ -176,7 +191,12 @@ class IngestWorker(Thread):
                         continue
                     frame = latest_frame
 
-                phone_usage, conf, snapshot, vis = self.process_frame(frame)
+                phone_usage_raw, conf_raw, snapshot, vis = self.process_frame(frame)
+
+                self.score_buffer.append(conf_raw)
+                smoothed_conf = max(self.score_buffer) if self.score_buffer else conf_raw
+                phone_usage = phone_usage_raw or smoothed_conf >= self.phone_score_threshold
+                conf = smoothed_conf if phone_usage else conf_raw
 
                 now = datetime.now(timezone.utc)
                 ev_type = None
@@ -300,6 +320,7 @@ class IngestWorker(Thread):
 
             head_center = np.mean(head_points, axis=0) if head_points else None
 
+            pose_heuristic_score = 0.0
             for phone in phones:
                 near_hand = False
                 if wrists:
@@ -349,6 +370,29 @@ class IngestWorker(Thread):
                         p2 = tuple(map(int, kpts[j]))
                         cv2.line(vis, p1, p2, (255,0,0), 2)
 
+            if not phones and wrists:
+                # эвристика: руки возле головы, запястья близко друг к другу, голова наклонена
+                wrist_head_rel = None
+                if head_center is not None:
+                    wrist_head_rel = min(np.linalg.norm(head_center - wrist) for wrist in wrists) / bbox_h
+                wrist_dist_rel = None
+                if len(wrists) >= 2:
+                    wrist_dist_rel = np.linalg.norm(wrists[0] - wrists[1]) / bbox_h
+
+                if wrist_head_rel is not None and wrist_head_rel <= self.pose_only_head_ratio:
+                    pose_heuristic_score += 0.45
+                if wrist_dist_rel is not None and wrist_dist_rel <= self.pose_wrists_dist_ratio:
+                    pose_heuristic_score += 0.25
+                if head_tilt >= self.pose_tilt_threshold:
+                    pose_heuristic_score += 0.2
+
+                if pose_heuristic_score >= self.pose_only_score_threshold:
+                    phone_usage = True
+                    best_conf = max(best_conf, pose_heuristic_score)
+                    if need_overlay:
+                        center_y = int((bbox[1] + bbox[3]) * 0.5)
+                        cv2.putText(vis, 'POSE PHONE', (x1, max(15, center_y)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+
         # рамки телефонов и подписи
         if need_overlay:
             for phone in phones:
@@ -362,11 +406,10 @@ class IngestWorker(Thread):
         # snapshot (опционально размываем лица)
         snap_src = vis if self.visualize and vis is not None else frame
         snap = snap_src.copy()
-        if self.face_blur:
+        if self.face_blur and self.face_cascade is not None:
             try:
-                face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
                 gray = cv2.cvtColor(snap, cv2.COLOR_BGR2GRAY)
-                faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+                faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
                 for (x,y,w,h) in faces:
                     roi = snap[y:y+h, x:x+w]
                     roi = cv2.GaussianBlur(roi, (99,99), 30)
