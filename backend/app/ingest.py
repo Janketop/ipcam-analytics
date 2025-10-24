@@ -266,7 +266,7 @@ class IngestWorker(Thread):
                         con.execute(
                             text(
                                 "INSERT INTO events(camera_id,type,start_ts,confidence,snapshot_url,meta) "
-                                "VALUES (:c,:t,:s,:conf,:u,:m::jsonb)"
+                                "VALUES (:c,:t,:s,:conf,:u,CAST(:m AS jsonb))"
                             ),
                             {
                                 "c": self.cam_id,
