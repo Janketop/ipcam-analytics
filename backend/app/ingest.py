@@ -33,6 +33,13 @@ class IngestWorker(Thread):
         reconnect_delay = float(os.getenv("RTSP_RECONNECT_DELAY", "5"))
         max_failed_reads = int(os.getenv("RTSP_MAX_FAILED_READS", "25"))
 
+        capture_options = os.getenv("OPENCV_FFMPEG_CAPTURE_OPTIONS")
+        if not capture_options:
+            transport = os.getenv("RTSP_TRANSPORT", "").strip().lower()
+            if transport in {"tcp", "udp"}:
+                capture_options = f"rtsp_transport;{transport}"
+                os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = capture_options
+
         while not self.stop_flag:
             cap = cv2.VideoCapture(self.url)
             # минимальная буферизация, если поддерживается
