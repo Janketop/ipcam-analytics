@@ -10,9 +10,9 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 from .storage import get_engine
-from .ingest import IngestManager
+from .ingest import IngestManager, env_flag
 
-FACE_BLUR = os.getenv("FACE_BLUR", "true").lower() == "true"
+FACE_BLUR = env_flag("FACE_BLUR", False)
 RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "7"))
 
 app = FastAPI(title="IPCam Analytics (RU)")
