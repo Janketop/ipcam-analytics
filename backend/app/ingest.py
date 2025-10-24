@@ -35,6 +35,12 @@ class IngestWorker(Thread):
 
         while not self.stop_flag:
             cap = cv2.VideoCapture(self.url)
+            # минимальная буферизация, если поддерживается
+            try:
+                if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
             if not cap.isOpened():
                 print(f"[{self.name}] не удалось открыть поток, повтор через {reconnect_delay} с")
                 cap.release()
@@ -61,6 +67,30 @@ class IngestWorker(Thread):
                 frame_id += 1
                 if frame_id % fps_skip != 0:
                     continue
+
+                # сброс накопленных кадров, чтобы обрабатывать самый свежий
+                latest_frame = frame
+                flush_failed = False
+                flush_start = time.time()
+                flush_timeout = 0.2
+                while time.time() - flush_start < flush_timeout:
+                    ok_flush, next_frame = cap.read()
+                    if not ok_flush:
+                        failed_reads += 1
+                        if failed_reads >= max_failed_reads:
+                            reconnect_needed = True
+                            print(f"[{self.name}] потеряно соединение, переподключаюсь через {reconnect_delay} с")
+                            break
+                        flush_failed = True
+                        time.sleep(0.2)
+                        break
+                    latest_frame = next_frame
+                if reconnect_needed:
+                    break
+                if flush_failed:
+                    continue
+
+                frame = latest_frame
 
                 phone_usage, conf, snapshot, vis = self.process_frame(frame)
 
