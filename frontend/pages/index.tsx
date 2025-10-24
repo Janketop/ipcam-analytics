@@ -2,6 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Chart, BarController, BarElement, CategoryScale, LinearScale, Tooltip, Legend } from 'chart.js';
 Chart.register(BarController, BarElement, CategoryScale, LinearScale, Tooltip, Legend);
 
+type EventMeta = {
+  plate?: string | null;
+  entry_ts?: string | null;
+};
+
 type Event = {
   id?: number;
   type: string;
@@ -9,6 +14,7 @@ type Event = {
   confidence?: number;
   snapshot_url?: string;
   camera?: string;
+  meta?: EventMeta;
 };
 
 type Stat = { type: string; cnt: number };
@@ -286,6 +292,18 @@ export default function Home() {
   const [simEvents, setSimEvents] = useState<SimEvent[]>([]);
   const [viewMode, setViewMode] = useState<'live' | 'sim'>('live');
 
+  const resolvePlate = (meta?: EventMeta) => {
+    const plate = meta?.plate;
+    if (!plate) return '—';
+    return plate;
+  };
+
+  const resolveEntryTime = (meta?: EventMeta, fallback?: string) => {
+    const ts = meta?.entry_ts || fallback;
+    if (!ts) return '—';
+    return new Date(ts).toLocaleString();
+  };
+
   useEffect(() => {
     fetch('http://localhost:8000/events')
       .then(r => r.json())
@@ -300,7 +318,17 @@ export default function Home() {
     const ws = new WebSocket('ws://localhost:8000/ws/events');
     ws.onmessage = (msg) => {
       const data = JSON.parse(msg.data);
-      setEvents(prev => [{ type: data.type, start_ts: data.ts, confidence: data.confidence, snapshot_url: data.snapshot_url, camera: data.camera }, ...prev].slice(0,200));
+      setEvents(prev => [
+        {
+          type: data.type,
+          start_ts: data.ts,
+          confidence: data.confidence,
+          snapshot_url: data.snapshot_url,
+          camera: data.camera,
+          meta: data.meta,
+        },
+        ...prev,
+      ].slice(0,200));
     };
     return () => ws.close();
   }, []);
@@ -421,18 +449,55 @@ export default function Home() {
       </section>
 
       <h2 style={{marginTop:24}}>Лента событий</h2>
-      <ul style={{listStyle:'none', padding:0}}>
-        {events.map((e,i) => (
-          <li key={i} style={{border:'1px solid #ddd', borderRadius:8, padding:12, marginBottom:12, display:'flex', gap:12}}>
-            {e.snapshot_url && <img src={`http://localhost:8000${e.snapshot_url}`} alt="snapshot" width={180} style={{borderRadius:8}} />}
-            <div>
-              <div><strong>{e.type}</strong> {e.camera ? `— ${e.camera}`: ''}</div>
-              <div>{new Date(e.start_ts).toLocaleString()}</div>
-              {e.confidence !== undefined && <div>уверенность: {e.confidence.toFixed(2)}</div>}
-            </div>
-          </li>
-        ))}
-      </ul>
+      <div style={{overflowX:'auto'}}>
+        <table style={{width:'100%', minWidth:720, borderCollapse:'collapse', border:'1px solid #e2e8f0'}}>
+          <thead style={{background:'#f8fafc'}}>
+            <tr>
+              <th style={{padding:10, textAlign:'left', borderBottom:'1px solid #e2e8f0'}}>Превью</th>
+              <th style={{padding:10, textAlign:'left', borderBottom:'1px solid #e2e8f0'}}>Событие</th>
+              <th style={{padding:10, textAlign:'left', borderBottom:'1px solid #e2e8f0'}}>Время фиксации</th>
+              <th style={{padding:10, textAlign:'left', borderBottom:'1px solid #e2e8f0'}}>Госномер</th>
+              <th style={{padding:10, textAlign:'left', borderBottom:'1px solid #e2e8f0'}}>Время заезда</th>
+              <th style={{padding:10, textAlign:'left', borderBottom:'1px solid #e2e8f0'}}>Уверенность</th>
+            </tr>
+          </thead>
+          <tbody>
+            {events.map((e, i) => (
+              <tr key={i} style={{background: i % 2 === 0 ? '#fff' : '#f8fafc'}}>
+                <td style={{padding:10, borderBottom:'1px solid #e2e8f0'}}>
+                  {e.snapshot_url ? (
+                    <img
+                      src={`http://localhost:8000${e.snapshot_url}`}
+                      alt="snapshot"
+                      width={160}
+                      style={{borderRadius:8, display:'block'}}
+                    />
+                  ) : (
+                    <span style={{color:'#94a3b8'}}>—</span>
+                  )}
+                </td>
+                <td style={{padding:10, borderBottom:'1px solid #e2e8f0', minWidth:160}}>
+                  <div style={{fontWeight:600}}>{e.type}</div>
+                  <div style={{color:'#475569', fontSize:13}}>{e.camera ? `Камера: ${e.camera}` : '—'}</div>
+                </td>
+                <td style={{padding:10, borderBottom:'1px solid #e2e8f0'}}>{new Date(e.start_ts).toLocaleString()}</td>
+                <td style={{padding:10, borderBottom:'1px solid #e2e8f0', fontFamily:'monospace', fontSize:16}}>{resolvePlate(e.meta)}</td>
+                <td style={{padding:10, borderBottom:'1px solid #e2e8f0'}}>{resolveEntryTime(e.meta, e.start_ts)}</td>
+                <td style={{padding:10, borderBottom:'1px solid #e2e8f0'}}>
+                  {e.confidence !== undefined ? e.confidence.toFixed(2) : '—'}
+                </td>
+              </tr>
+            ))}
+            {events.length === 0 && (
+              <tr>
+                <td colSpan={6} style={{padding:16, textAlign:'center', color:'#64748b'}}>
+                  Пока нет зафиксированных событий.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </main>
   );
 }

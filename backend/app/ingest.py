@@ -1,11 +1,14 @@
-import os, cv2, time, asyncio
+import os, cv2, time, asyncio, json
 from typing import Optional
 from collections import deque
 from datetime import datetime, timezone, timedelta
 from threading import Thread
+from uuid import uuid4
+
 from sqlalchemy import text
 import numpy as np
 from ultralytics import YOLO
+from easyocr import Reader
 try:
     import torch
 except Exception:  # pragma: no cover - torch may be unavailable in tests
@@ -108,6 +111,20 @@ class IngestWorker(Thread):
         self.pose_tilt_threshold = env_float("POSE_TILT_THRESHOLD", 0.22, min_value=0.05)
         self.score_smoothing = env_int("PHONE_SCORE_SMOOTHING", 5, min_value=1)
 
+        names_map = getattr(self.det.model, "names", None) or getattr(self.det, "names", {})
+        self.det_names = {int(k): v for k, v in names_map.items()} if isinstance(names_map, dict) else {}
+        self.car_class_ids = {idx for idx, name in self.det_names.items() if name in {"car", "truck", "bus"}}
+        self.car_conf_threshold = env_float("CAR_DET_CONF", 0.35, min_value=0.05)
+        self.min_car_fg_ratio = env_float("CAR_MOVING_FG_RATIO", 0.05, min_value=0.0)
+        self.car_event_cooldown = env_float("CAR_EVENT_COOLDOWN", 8.0, min_value=1.0)
+        self.last_car_event_time = 0.0
+
+        self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16, detectShadows=True)
+
+        self.ocr_langs = os.getenv("PLATE_OCR_LANGS", "ru,en")
+        self.ocr_reader: Optional[Reader] = None
+        self._ocr_failed = False
+
         self.phone_idx = None
 
         self.phone_active_until = None
@@ -191,7 +208,7 @@ class IngestWorker(Thread):
                         continue
                     frame = latest_frame
 
-                phone_usage_raw, conf_raw, snapshot, vis = self.process_frame(frame)
+                phone_usage_raw, conf_raw, snapshot, vis, car_events = self.process_frame(frame)
 
                 self.score_buffer.append(conf_raw)
                 smoothed_conf = max(self.score_buffer) if self.score_buffer else conf_raw
@@ -199,6 +216,7 @@ class IngestWorker(Thread):
                 conf = smoothed_conf if phone_usage else conf_raw
 
                 now = datetime.now(timezone.utc)
+                events_to_store = []
                 ev_type = None
                 if phone_usage:
                     self.phone_active_until = now + timedelta(seconds=5)
@@ -218,12 +236,60 @@ class IngestWorker(Thread):
                         pass
 
                 if ev_type:
-                    snap_url = self.save_snapshot(snapshot, now)
+                    events_to_store.append({
+                        "ts": now,
+                        "type": ev_type,
+                        "confidence": float(conf),
+                        "snapshot": snapshot,
+                        "meta": {},
+                        "kind": "phone",
+                    })
+
+                for car_ev in car_events:
+                    car_now = datetime.now(timezone.utc)
+                    meta = {
+                        "plate": car_ev.get("plate") or "НЕ РАСПОЗНАНО",
+                        "entry_ts": car_now.isoformat(),
+                    }
+                    events_to_store.append({
+                        "ts": car_now,
+                        "type": "CAR_ENTRY",
+                        "confidence": float(car_ev.get("confidence", 0.0)),
+                        "snapshot": car_ev.get("snapshot"),
+                        "meta": meta,
+                        "kind": "car",
+                    })
+
+                for payload in events_to_store:
+                    snap_url = self.save_snapshot(payload["snapshot"], payload["ts"], event_type=payload["kind"])
                     with self.engine.begin() as con:
-                        con.execute(text("INSERT INTO events(camera_id,type,start_ts,confidence,snapshot_url,meta) VALUES (:c,:t,:s,:conf,:u,'{}')"),
-                                    {"c": self.cam_id, "t": ev_type, "s": now, "conf": float(conf), "u": snap_url})
+                        con.execute(
+                            text(
+                                "INSERT INTO events(camera_id,type,start_ts,confidence,snapshot_url,meta) "
+                                "VALUES (:c,:t,:s,:conf,:u,:m::jsonb)"
+                            ),
+                            {
+                                "c": self.cam_id,
+                                "t": payload["type"],
+                                "s": payload["ts"],
+                                "conf": payload["confidence"],
+                                "u": snap_url,
+                                "m": json.dumps(payload["meta"]),
+                            },
+                        )
                     if self.broadcaster:
-                        asyncio.run(self.broadcaster({"camera": self.name, "type": ev_type, "ts": now.isoformat(), "confidence": float(conf), "snapshot_url": snap_url}))
+                        asyncio.run(
+                            self.broadcaster(
+                                {
+                                    "camera": self.name,
+                                    "type": payload["type"],
+                                    "ts": payload["ts"].isoformat(),
+                                    "confidence": payload["confidence"],
+                                    "snapshot_url": snap_url,
+                                    "meta": payload["meta"],
+                                }
+                            )
+                        )
 
             cap.release()
             if self.stop_flag:
@@ -236,7 +302,117 @@ class IngestWorker(Thread):
         """Возвращает последний сохранённый визуализированный кадр в формате JPEG."""
         return self.last_visual_jpeg
 
+    def prepare_snapshot(self, img_bgr):
+        snap = img_bgr.copy()
+        if self.face_blur and self.face_cascade is not None:
+            try:
+                gray = cv2.cvtColor(snap, cv2.COLOR_BGR2GRAY)
+                faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
+                for (x, y, w, h) in faces:
+                    roi = snap[y:y + h, x:x + w]
+                    roi = cv2.GaussianBlur(roi, (99, 99), 30)
+                    snap[y:y + h, x:x + w] = roi
+            except Exception:
+                pass
+        return snap
+
+    def ensure_ocr_reader(self):
+        if self._ocr_failed:
+            return None
+        if self.ocr_reader is None:
+            langs = [lang.strip() for lang in self.ocr_langs.split(",") if lang.strip()]
+            if not langs:
+                langs = ["en"]
+            try:
+                self.ocr_reader = Reader(langs, gpu=False)
+            except Exception as exc:
+                print(f"[{self.name}] не удалось инициализировать OCR: {exc}")
+                self._ocr_failed = True
+                self.ocr_reader = None
+        return self.ocr_reader
+
+    def detect_plate_region(self, car_roi):
+        try:
+            gray = cv2.cvtColor(car_roi, cv2.COLOR_BGR2GRAY)
+        except Exception:
+            return None
+        gray = cv2.bilateralFilter(gray, 11, 17, 17)
+        edged = cv2.Canny(gray, 30, 200)
+        edged = cv2.morphologyEx(edged, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+        contours, _ = cv2.findContours(edged, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+        h, w = gray.shape[:2]
+        total_area = float(h * w)
+        for cnt in sorted(contours, key=cv2.contourArea, reverse=True):
+            area = cv2.contourArea(cnt)
+            if area < 0.01 * total_area or area > 0.35 * total_area:
+                continue
+            peri = cv2.arcLength(cnt, True)
+            approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
+            if len(approx) < 4:
+                continue
+            x, y, w_box, h_box = cv2.boundingRect(approx)
+            if h_box == 0:
+                continue
+            aspect = w_box / float(h_box)
+            if 2.0 <= aspect <= 6.5:
+                pad_x = int(w_box * 0.1)
+                pad_y = int(h_box * 0.2)
+                x0 = max(x - pad_x, 0)
+                y0 = max(y - pad_y, 0)
+                x1 = min(x + w_box + pad_x, car_roi.shape[1])
+                y1 = min(y + h_box + pad_y, car_roi.shape[0])
+                return car_roi[y0:y1, x0:x1]
+        return None
+
+    def ocr_plate(self, plate_img):
+        reader = self.ensure_ocr_reader()
+        if reader is None:
+            return None
+        try:
+            results = reader.readtext(plate_img)
+        except Exception as exc:
+            print(f"[{self.name}] ошибка OCR: {exc}")
+            return None
+        texts = []
+        for _bbox, text, conf in results:
+            if conf < 0.3:
+                continue
+            texts.append(text)
+        if not texts:
+            return None
+        raw = "".join(texts)
+        cleaned = "".join(ch for ch in raw if ch.isalnum())
+        return cleaned.upper() if cleaned else None
+
+    def recognize_plate(self, frame, bbox):
+        x1, y1, x2, y2 = map(int, bbox)
+        h, w = frame.shape[:2]
+        x1 = max(0, min(x1, w - 1))
+        x2 = max(0, min(x2, w))
+        y1 = max(0, min(y1, h - 1))
+        y2 = max(0, min(y2, h))
+        if x2 <= x1 or y2 <= y1:
+            return None
+        car_roi = frame[y1:y2, x1:x2]
+        if car_roi.size == 0:
+            return None
+        plate_roi = self.detect_plate_region(car_roi)
+        roi = plate_roi if plate_roi is not None else car_roi
+        return self.ocr_plate(roi)
+
+    def create_car_snapshot(self, frame, bbox, plate_text):
+        snap = frame.copy()
+        x1, y1, x2, y2 = map(int, bbox)
+        cv2.rectangle(snap, (x1, y1), (x2, y2), (255, 165, 0), 3)
+        label = plate_text if plate_text else "CAR"
+        cv2.putText(snap, label, (x1, max(30, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 165, 0), 2)
+        return self.prepare_snapshot(snap)
+
     def process_frame(self, frame):
+        fg_mask = self.bg_subtractor.apply(frame)
+
         det_kwargs = {"imgsz": self.det_imgsz, "conf": self.det_conf}
         if self.predict_device:
             det_kwargs["device"] = self.predict_device
@@ -249,6 +425,7 @@ class IngestWorker(Thread):
                     break
 
         phones = []
+        cars = []
         boxes = getattr(det_res, "boxes", None)
         if boxes is not None:
             for b in boxes:
@@ -256,19 +433,21 @@ class IngestWorker(Thread):
                     cls_idx = int(b.cls[0])
                 except Exception:
                     continue
-                if self.phone_idx is None or cls_idx != self.phone_idx:
-                    continue
                 conf = float(b.conf[0]) if getattr(b, "conf", None) is not None else 0.0
-                if conf < self.det_conf:
-                    continue
                 xyxy = b.xyxy[0].cpu().numpy()
-                cx = float((xyxy[0] + xyxy[2]) * 0.5)
-                cy = float((xyxy[1] + xyxy[3]) * 0.5)
-                phones.append({
-                    "bbox": xyxy,
-                    "center": np.array([cx, cy], dtype=np.float32),
-                    "conf": conf,
-                })
+                if self.phone_idx is not None and cls_idx == self.phone_idx and conf >= self.det_conf:
+                    cx = float((xyxy[0] + xyxy[2]) * 0.5)
+                    cy = float((xyxy[1] + xyxy[3]) * 0.5)
+                    phones.append({
+                        "bbox": xyxy,
+                        "center": np.array([cx, cy], dtype=np.float32),
+                        "conf": conf,
+                    })
+                if cls_idx in self.car_class_ids and conf >= self.car_conf_threshold:
+                    cars.append({
+                        "bbox": xyxy,
+                        "conf": conf,
+                    })
 
         pose_kwargs = {"imgsz": self.det_imgsz, "conf": self.pose_conf}
         if self.predict_device:
@@ -280,6 +459,44 @@ class IngestWorker(Thread):
         # визуализируем на копии
         need_overlay = self.visualize
         vis = frame.copy() if need_overlay else None
+
+        car_events = []
+        now_monotonic = time.monotonic()
+        h_frame, w_frame = frame.shape[:2]
+        for car in cars:
+            x1, y1, x2, y2 = map(int, car["bbox"])
+            x1 = max(0, min(x1, w_frame - 1))
+            x2 = max(0, min(x2, w_frame))
+            y1 = max(0, min(y1, h_frame - 1))
+            y2 = max(0, min(y2, h_frame))
+            if x2 <= x1 or y2 <= y1:
+                continue
+            car_mask = fg_mask[y1:y2, x1:x2] if fg_mask is not None else None
+            moving_ratio = float(np.mean(car_mask > 0)) if car_mask is not None and car_mask.size else 0.0
+            is_moving = moving_ratio >= self.min_car_fg_ratio
+
+            if need_overlay and vis is not None:
+                color = (255, 140, 0) if is_moving else (60, 180, 75)
+                cv2.rectangle(vis, (x1, y1), (x2, y2), color, 2)
+                label = f"CAR {car['conf']:.2f}"
+                if is_moving:
+                    label = f"CAR MOVE {car['conf']:.2f}"
+                cv2.putText(vis, label, (x1, max(25, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+            if not is_moving:
+                continue
+
+            if now_monotonic - self.last_car_event_time < self.car_event_cooldown:
+                continue
+
+            plate_text = self.recognize_plate(frame, car["bbox"])
+            car_snapshot = self.create_car_snapshot(frame, car["bbox"], plate_text)
+            car_events.append({
+                "plate": plate_text,
+                "confidence": float(car["conf"]),
+                "snapshot": car_snapshot,
+            })
+            self.last_car_event_time = now_monotonic
 
         if pose_res.boxes is None or pose_res.keypoints is None:
             people_iter = []
@@ -405,24 +622,16 @@ class IngestWorker(Thread):
 
         # snapshot (опционально размываем лица)
         snap_src = vis if self.visualize and vis is not None else frame
-        snap = snap_src.copy()
-        if self.face_blur and self.face_cascade is not None:
-            try:
-                gray = cv2.cvtColor(snap, cv2.COLOR_BGR2GRAY)
-                faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
-                for (x,y,w,h) in faces:
-                    roi = snap[y:y+h, x:x+w]
-                    roi = cv2.GaussianBlur(roi, (99,99), 30)
-                    snap[y:y+h, x:x+w] = roi
-            except Exception:
-                pass
+        snap = self.prepare_snapshot(snap_src)
 
-        return phone_usage, best_conf, snap, vis if self.visualize else None
+        return phone_usage, best_conf, snap, vis if self.visualize else None, car_events
 
-    def save_snapshot(self, img_bgr, ts):
+    def save_snapshot(self, img_bgr, ts, event_type="event"):
+        if img_bgr is None:
+            return ""
         out_dir = "/app/app/static/snaps"
         os.makedirs(out_dir, exist_ok=True)
-        fname = f"{self.name}_{int(ts.timestamp())}.jpg"
+        fname = f"{self.name}_{event_type}_{int(ts.timestamp())}_{uuid4().hex[:6]}.jpg"
         path = os.path.join(out_dir, fname)
         cv2.imwrite(path, img_bgr)
         return f"/static/snaps/{fname}"
