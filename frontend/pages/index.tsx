@@ -40,6 +40,33 @@ type PersonSim = {
   lastEventTs: number;
 };
 
+type RuntimeWorker = {
+  camera: string;
+  preferred_device: string;
+  selected_device: string;
+  actual_device: string;
+  using_gpu: boolean;
+  visualize_enabled: boolean;
+  device_error?: string | null;
+  gpu_unavailable_reason?: string | null;
+};
+
+type RuntimeSystem = {
+  torch_available: boolean;
+  torch_version?: string | null;
+  cuda_available: boolean;
+  cuda_device_count: number;
+  cuda_name?: string | null;
+  mps_available?: boolean;
+  env_device?: string | null;
+  cuda_visible_devices?: string | null;
+};
+
+type RuntimeInfo = {
+  system: RuntimeSystem;
+  workers: RuntimeWorker[];
+};
+
 const CANVAS_W = 640;
 const CANVAS_H = 360;
 
@@ -291,6 +318,8 @@ export default function Home() {
   const [cameras, setCameras] = useState<{id:number; name:string}[]>([]);
   const [simEvents, setSimEvents] = useState<SimEvent[]>([]);
   const [viewMode, setViewMode] = useState<'live' | 'sim'>('live');
+  const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
 
   const resolveApiBase = useCallback(() => {
     const envBase = process.env.NEXT_PUBLIC_API_BASE;
@@ -354,6 +383,32 @@ export default function Home() {
       ].slice(0,200));
     };
     return () => ws.close();
+  }, [resolveApiBase]);
+
+  useEffect(() => {
+    let active = true;
+    const base = resolveApiBase();
+
+    const load = () => {
+      fetch(`${base}/runtime`)
+        .then(r => r.json())
+        .then(data => {
+          if (!active) return;
+          setRuntime(data as RuntimeInfo);
+          setRuntimeError(null);
+        })
+        .catch(err => {
+          if (!active) return;
+          setRuntimeError(err.message);
+        });
+    };
+
+    load();
+    const timer = setInterval(load, 10000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
   }, [resolveApiBase]);
 
   useEffect(() => {
@@ -429,6 +484,101 @@ export default function Home() {
                 Симулятор
               </button>
             </div>
+          </div>
+
+          <div
+            style={{
+              background:'#f8fafc',
+              border:'1px solid #e2e8f0',
+              borderRadius:8,
+              padding:12,
+              display:'flex',
+              flexDirection:'column',
+              gap:8,
+            }}
+          >
+            <h4 style={{margin:'0 0 4px'}}>Статус вычислений</h4>
+            {runtime ? (
+              <div style={{display:'flex', flexDirection:'column', gap:6, fontSize:14, color:'#0f172a'}}>
+                <div>
+                  <strong>PyTorch:</strong>{' '}
+                  {runtime.system.torch_available
+                    ? `есть${runtime.system.torch_version ? ` (версия ${runtime.system.torch_version})` : ''}`
+                    : 'не обнаружен'}
+                </div>
+                <div>
+                  <strong>CUDA:</strong>{' '}
+                  {runtime.system.cuda_available
+                    ? `доступна${runtime.system.cuda_name ? ` (${runtime.system.cuda_name})` : ''} — устройств: ${runtime.system.cuda_device_count}`
+                    : 'не обнаружена'}
+                </div>
+                {runtime.system.mps_available && (
+                  <div>
+                    <strong>Apple MPS:</strong> доступен
+                  </div>
+                )}
+                <div>
+                  <strong>YOLO_DEVICE:</strong>{' '}
+                  {(runtime.system.env_device && runtime.system.env_device.trim()) || 'auto'}
+                </div>
+                {runtime.system.cuda_visible_devices && (
+                  <div>
+                    <strong>CUDA_VISIBLE_DEVICES:</strong>{' '}
+                    {runtime.system.cuda_visible_devices}
+                  </div>
+                )}
+                <div style={{borderTop:'1px solid #e2e8f0', paddingTop:8, marginTop:4}}>
+                  <div style={{fontWeight:600, marginBottom:6}}>Воркеры обработки</div>
+                  {runtime.workers.length === 0 ? (
+                    <p style={{margin:0, color:'#475569'}}>Воркеры ещё не запущены или камеры не активны.</p>
+                  ) : (
+                    <ul style={{listStyle:'none', margin:0, padding:0, display:'grid', gap:8}}>
+                      {runtime.workers.map(worker => (
+                        <li
+                          key={worker.camera}
+                          style={{
+                            background:'#fff',
+                            border:'1px solid #e2e8f0',
+                            borderRadius:6,
+                            padding:10,
+                            display:'flex',
+                            flexDirection:'column',
+                            gap:6,
+                          }}
+                        >
+                          <div style={{display:'flex', justifyContent:'space-between', gap:8, flexWrap:'wrap'}}>
+                            <span style={{fontWeight:600}}>{worker.camera}</span>
+                            <span style={{color: worker.using_gpu ? '#0f766e' : '#b91c1c', fontWeight:600}}>
+                              {worker.using_gpu ? 'GPU' : 'CPU'}
+                            </span>
+                          </div>
+                          <div style={{fontSize:13, color:'#475569'}}>
+                            Фактическое устройство: {worker.actual_device}
+                          </div>
+                          <div style={{fontSize:13, color:'#475569'}}>
+                            Предпочтение: {worker.preferred_device || 'auto'} → выбранное: {worker.selected_device}
+                          </div>
+                          {worker.gpu_unavailable_reason && (
+                            <div style={{fontSize:13, color:'#b91c1c'}}>
+                              <strong>Почему не GPU:</strong> {worker.gpu_unavailable_reason}
+                            </div>
+                          )}
+                          {worker.device_error && worker.device_error !== worker.gpu_unavailable_reason && (
+                            <div style={{fontSize:13, color:'#b91c1c'}}>
+                              <strong>Ошибка модели:</strong> {worker.device_error}
+                            </div>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            ) : runtimeError ? (
+              <p style={{margin:0, color:'#b91c1c'}}>Не удалось получить статус: {runtimeError}</p>
+            ) : (
+              <p style={{margin:0, color:'#475569'}}>Загружаем информацию о вычислениях…</p>
+            )}
           </div>
 
           {viewMode === 'live' ? (
