@@ -1,4 +1,5 @@
 import os, cv2, time, asyncio, json
+from pathlib import Path
 from typing import Optional
 from collections import deque
 from datetime import datetime, timezone, timedelta
@@ -15,6 +16,10 @@ except Exception:  # pragma: no cover - torch may be unavailable in tests
     torch = None
 
 PHONE_CLASS = 'cell phone'
+
+STATIC_ROOT = Path(__file__).resolve().parent / "static"
+SNAPSHOT_DIR = STATIC_ROOT / "snaps"
+SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
 def env_flag(name: str, default: bool) -> bool:
     raw = os.getenv(name)
@@ -682,11 +687,9 @@ class IngestWorker(Thread):
     def save_snapshot(self, img_bgr, ts, event_type="event"):
         if img_bgr is None:
             return ""
-        out_dir = "/app/app/static/snaps"
-        os.makedirs(out_dir, exist_ok=True)
         fname = f"{self.name}_{event_type}_{int(ts.timestamp())}_{uuid4().hex[:6]}.jpg"
-        path = os.path.join(out_dir, fname)
-        cv2.imwrite(path, img_bgr)
+        path = SNAPSHOT_DIR / fname
+        cv2.imwrite(str(path), img_bgr)
         return f"/static/snaps/{fname}"
 
 class IngestManager:
