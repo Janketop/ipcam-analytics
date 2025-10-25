@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 ENV PIP_DEFAULT_TIMEOUT=600 \
     PIP_RETRIES=10 \
-    PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
+    PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu121
 
 WORKDIR /app
 
@@ -29,4 +29,4 @@ RUN pip install --no-cache-dir --default-timeout=${PIP_DEFAULT_TIMEOUT} -r requi
 
 COPY app /app/app
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
