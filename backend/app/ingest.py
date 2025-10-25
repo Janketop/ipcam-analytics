@@ -84,17 +84,27 @@ class IngestWorker(Thread):
 
         det_weights = os.getenv("YOLO_DET_MODEL", "yolov8n.pt")
         pose_weights = os.getenv("YOLO_POSE_MODEL", "yolov8n-pose.pt")
-        self.device = resolve_device(os.getenv("YOLO_DEVICE"))
+        self.device_preference = os.getenv("YOLO_DEVICE", "auto")
+        self.device = resolve_device(self.device_preference)
 
         # Lightweight модели
         self.det = YOLO(det_weights)
         self.pose = YOLO(pose_weights)
+        self.device_error: Optional[str] = None
+        self.actual_device: Optional[str] = None
         try:
             self.det.to(self.device)
             self.pose.to(self.device)
-        except Exception:
+        except Exception as exc:
             # Оставляем модели на устройстве по умолчанию, если перевод не поддерживается
-            pass
+            self.device_error = str(exc).strip() or None
+        finally:
+            det_model = getattr(self.det, "model", None)
+            model_device = getattr(det_model, "device", None)
+            if model_device is not None:
+                self.actual_device = str(model_device)
+            else:
+                self.actual_device = str(self.device)
 
         # аргумент device для прямых вызовов модели; ultralytics принимает 'cuda:0' и т.п.
         self.predict_device = None if self.device in {"cpu", "auto"} else self.device
@@ -138,6 +148,49 @@ class IngestWorker(Thread):
                     self.face_cascade = cv2.CascadeClassifier(cascade_path)
             except Exception:
                 self.face_cascade = None
+
+    def runtime_status(self) -> dict:
+        preferred = (self.device_preference or "auto").strip() or "auto"
+        selected = (self.device or "auto").strip()
+        actual = (self.actual_device or selected or "unknown").strip()
+        using_gpu = actual.lower().startswith("cuda") or actual.lower().startswith("mps")
+
+        def _cleanup(text: str) -> str:
+            cleaned = text.replace("\n", " ").replace("\r", " ").strip()
+            if len(cleaned) > 300:
+                return cleaned[:297] + "..."
+            return cleaned
+
+        reason: Optional[str] = None
+        pref_lower = preferred.lower()
+        if not using_gpu:
+            if pref_lower == "cpu":
+                reason = "В настройках указано использовать только CPU (YOLO_DEVICE=cpu)."
+            elif self.device_error:
+                reason = self.device_error
+            elif torch is None:
+                reason = "Библиотека PyTorch недоступна внутри контейнера, поэтому GPU не используется."
+            elif not torch.cuda.is_available():
+                reason = "PyTorch не видит CUDA (torch.cuda.is_available() = False). Проверьте драйвер NVIDIA и nvidia-container-toolkit."
+            elif pref_lower in {"", "auto"}:
+                reason = "Авто-режим выбрал CPU: перевести модель на GPU не удалось. Проверьте настройки и логи."  # noqa: E501
+            elif pref_lower.startswith("cuda") and not actual.lower().startswith("cuda"):
+                reason = "Модель не была загружена на указанное GPU устройство. Проверьте его доступность."
+
+        clean_error = _cleanup(self.device_error) if self.device_error else None
+        clean_reason = _cleanup(reason) if reason else None
+
+        info = {
+            "camera": self.name,
+            "preferred_device": preferred,
+            "selected_device": selected,
+            "actual_device": actual,
+            "using_gpu": using_gpu,
+            "visualize_enabled": bool(self.visualize),
+            "device_error": clean_error,
+            "gpu_unavailable_reason": clean_reason,
+        }
+        return info
 
     def run(self):
         reconnect_delay = env_float("RTSP_RECONNECT_DELAY", 5.0, min_value=0.5)
@@ -671,3 +724,44 @@ class IngestManager:
             if w.name == name:
                 return w
         return None
+
+    def runtime_status(self) -> dict:
+        workers = [w.runtime_status() for w in self.workers]
+
+        torch_available = torch is not None
+        cuda_available = bool(torch_available and torch.cuda.is_available())
+        cuda_device_count = 0
+        cuda_name = None
+        if cuda_available:
+            try:
+                cuda_device_count = int(torch.cuda.device_count())
+            except Exception:
+                cuda_device_count = 0
+            if cuda_device_count:
+                try:
+                    cuda_name = torch.cuda.get_device_name(0)
+                except Exception:
+                    cuda_name = None
+
+        mps_available = False
+        if torch_available and hasattr(torch.backends, "mps"):
+            try:
+                mps_available = bool(torch.backends.mps.is_available())
+            except Exception:
+                mps_available = False
+
+        system = {
+            "torch_available": torch_available,
+            "torch_version": getattr(torch, "__version__", None) if torch_available else None,
+            "cuda_available": cuda_available,
+            "cuda_device_count": cuda_device_count,
+            "cuda_name": cuda_name,
+            "mps_available": mps_available,
+            "env_device": os.getenv("YOLO_DEVICE", "auto"),
+            "cuda_visible_devices": os.getenv("CUDA_VISIBLE_DEVICES"),
+        }
+
+        return {
+            "system": system,
+            "workers": workers,
+        }
