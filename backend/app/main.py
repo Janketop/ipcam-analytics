@@ -57,6 +57,11 @@ async def startup_event():
 def health():
     return {"ok": True, "face_blur": FACE_BLUR, "retention_days": RETENTION_DAYS}
 
+
+@app.get("/runtime")
+def runtime():
+    return ingest.runtime_status()
+
 @app.get("/cameras")
 def list_cameras():
     with engine.connect() as con:
