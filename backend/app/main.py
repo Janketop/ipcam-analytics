@@ -1,11 +1,13 @@
 import os
 import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import List
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -16,6 +18,10 @@ FACE_BLUR = env_flag("FACE_BLUR", False)
 RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "7"))
 
 app = FastAPI(title="IPCam Analytics (RU)")
+
+static_dir = Path(__file__).resolve().parent / "static"
+static_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 frontend_origins = os.getenv("FRONTEND_ORIGINS") or os.getenv("FRONTEND_URL") or ""
 allow_origins = {origin.strip() for origin in frontend_origins.split(",") if origin.strip()}
