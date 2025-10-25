@@ -345,11 +345,16 @@ export default function Home() {
   const buildAbsoluteUrl = useCallback(
     (path?: string | null) => {
       if (!path) return null;
+      if (/^https?:\/\//i.test(path)) {
+        return path;
+      }
       const normalizedPath = path.startsWith('/') ? path : `/${path}`;
       return `${normalizedApiBase}${normalizedPath}`;
     },
     [normalizedApiBase]
   );
+
+  const [liveStreamOverride, setLiveStreamOverride] = useState<string | null>(null);
 
   useEffect(() => {
     setApiBase(resolveApiBase());
@@ -462,9 +467,21 @@ export default function Home() {
   }, [stats]);
 
   const firstCam = cameras[0]?.name;
-  const liveStreamUrl = firstCam
+  const defaultLiveStreamUrl = firstCam
     ? `${normalizedApiBase}/stream/${encodeURIComponent(firstCam)}`
     : null;
+  const liveStreamUrl = liveStreamOverride ?? defaultLiveStreamUrl;
+
+  useEffect(() => {
+    setLiveStreamOverride(null);
+  }, [defaultLiveStreamUrl]);
+
+  const handleLiveError = useCallback(() => {
+    if (!firstCam || typeof window === 'undefined') return;
+    const fallbackBase = window.location.origin.replace(/\/$/, '');
+    const fallbackUrl = `${fallbackBase}/stream/${encodeURIComponent(firstCam)}`;
+    setLiveStreamOverride(prev => (prev === fallbackUrl ? prev : fallbackUrl));
+  }, [firstCam]);
 
   const handleSimEvent = useCallback((ev: SimEvent) => {
     setSimEvents(prev => [ev, ...prev].slice(0, 15));
@@ -666,6 +683,7 @@ export default function Home() {
                   alt="live"
                   style={{width:'100%', borderRadius:8, cursor:'zoom-in'}}
                   onClick={() => setLiveExpanded(true)}
+                  onError={handleLiveError}
                 />
               ) : (
                 <p>Камеры не настроены. Добавьте RTSP в <code>.env</code>.</p>
@@ -722,6 +740,7 @@ export default function Home() {
                         borderRadius:12,
                         boxShadow:'0 18px 36px rgba(15,23,42,0.45)'
                       }}
+                      onError={handleLiveError}
                     />
                   </div>
                 </div>
