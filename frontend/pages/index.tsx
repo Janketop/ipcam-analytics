@@ -292,6 +292,22 @@ export default function Home() {
   const [simEvents, setSimEvents] = useState<SimEvent[]>([]);
   const [viewMode, setViewMode] = useState<'live' | 'sim'>('live');
 
+  const resolveApiBase = useCallback(() => {
+    const envBase = process.env.NEXT_PUBLIC_API_BASE;
+    if (envBase && envBase.trim()) {
+      return envBase.replace(/\/$/, '');
+    }
+
+    if (typeof window !== 'undefined') {
+      const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+      const host = window.location.hostname;
+      const port = process.env.NEXT_PUBLIC_API_PORT || '8000';
+      return `${protocol}//${host}${port ? `:${port}` : ''}`;
+    }
+
+    return 'http://localhost:8000';
+  }, []);
+
   const resolvePlate = (meta?: EventMeta) => {
     const plate = meta?.plate;
     if (!plate) return '—';
@@ -305,17 +321,24 @@ export default function Home() {
   };
 
   useEffect(() => {
-    fetch('http://localhost:8000/events')
+    const base = resolveApiBase();
+
+    fetch(`${base}/events`)
       .then(r => r.json())
-      .then(d => setEvents(d.events || []));
+      .then(d => setEvents(d.events || []))
+      .catch(err => console.error('Не удалось получить события:', err));
 
-    fetch('http://localhost:8000/stats')
-      .then(r => r.json()).then(d => setStats(d.stats || []));
+    fetch(`${base}/stats`)
+      .then(r => r.json()).then(d => setStats(d.stats || []))
+      .catch(err => console.error('Не удалось получить статистику:', err));
 
-    fetch('http://localhost:8000/cameras')
-      .then(r => r.json()).then(d => setCameras(d.cameras || []));
+    fetch(`${base}/cameras`)
+      .then(r => r.json()).then(d => setCameras(d.cameras || []))
+      .catch(err => console.error('Не удалось получить список камер:', err));
 
-    const ws = new WebSocket('ws://localhost:8000/ws/events');
+    const wsProtocol = base.startsWith('https') ? 'wss' : 'ws';
+    const wsHost = base.replace(/^https?:\/\//, '');
+    const ws = new WebSocket(`${wsProtocol}://${wsHost}/ws/events`);
     ws.onmessage = (msg) => {
       const data = JSON.parse(msg.data);
       setEvents(prev => [
@@ -331,7 +354,7 @@ export default function Home() {
       ].slice(0,200));
     };
     return () => ws.close();
-  }, []);
+  }, [resolveApiBase]);
 
   useEffect(() => {
     const el = document.getElementById('statsChart') as HTMLCanvasElement | null;
