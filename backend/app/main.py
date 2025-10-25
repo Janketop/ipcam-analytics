@@ -21,10 +21,12 @@ frontend_origins = os.getenv("FRONTEND_ORIGINS") or os.getenv("FRONTEND_URL") or
 allow_origins = {origin.strip() for origin in frontend_origins.split(",") if origin.strip()}
 default_origins = {"http://localhost:3000", "http://127.0.0.1:3000"}
 allow_origins.update(default_origins)
+origin_regex = os.getenv("FRONTEND_ORIGIN_REGEX") or r"https?://.*"
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=sorted(allow_origins),
+    allow_origin_regex=origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -41,15 +43,25 @@ class CameraCreate(BaseModel):
 async def startup_event():
     # Инициализация камер из RTSP_SOURCES
     sources = os.getenv("RTSP_SOURCES", "")
-    con = engine.connect()
     if sources.strip():
+        entries = []
         for item in sources.split(","):
             if "|" in item:
                 name, url = item.split("|", 1)
             else:
                 name, url = f"cam_{hash(item)%10000}", item
-            con.execute(text("INSERT INTO cameras(name, rtsp_url) VALUES (:n,:u) ON CONFLICT (name) DO NOTHING"), {"n": name.strip(), "u": url.strip()})
-        con.commit()
+            entries.append((name.strip(), url.strip()))
+
+        if entries:
+            with engine.begin() as con:
+                for name, url in entries:
+                    con.execute(
+                        text(
+                            "INSERT INTO cameras(name, rtsp_url) VALUES (:n,:u) "
+                            "ON CONFLICT (name) DO NOTHING"
+                        ),
+                        {"n": name, "u": url},
+                    )
     # Запускаем воркеры
     await ingest.start_all()
 

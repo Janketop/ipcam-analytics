@@ -337,6 +337,12 @@ export default function Home() {
     return 'http://localhost:8000';
   }, []);
 
+  const [apiBase, setApiBase] = useState<string>(() => resolveApiBase());
+
+  useEffect(() => {
+    setApiBase(resolveApiBase());
+  }, [resolveApiBase]);
+
   const resolvePlate = (meta?: EventMeta) => {
     const plate = meta?.plate;
     if (!plate) return '—';
@@ -391,7 +397,14 @@ export default function Home() {
 
     const load = () => {
       fetch(`${base}/runtime`)
-        .then(r => r.json())
+        .then(async r => {
+          if (!r.ok) {
+            const text = await r.text().catch(() => '');
+            const msg = text && text.trim() ? text.trim() : `HTTP ${r.status}`;
+            throw new Error(msg);
+          }
+          return r.json();
+        })
         .then(data => {
           if (!active) return;
           setRuntime(data as RuntimeInfo);
@@ -399,6 +412,7 @@ export default function Home() {
         })
         .catch(err => {
           if (!active) return;
+          setRuntime(null);
           setRuntimeError(err.message);
         });
     };
@@ -587,7 +601,11 @@ export default function Home() {
                 Живой просмотр{firstCam ? ` — ${firstCam}`: ''}
               </h4>
               {firstCam ? (
-                <img src={`http://localhost:8000/stream/${firstCam}`} alt="live" style={{width:'100%', borderRadius:8}} />
+                <img
+                  src={`${apiBase}/stream/${encodeURIComponent(firstCam)}`}
+                  alt="live"
+                  style={{width:'100%', borderRadius:8}}
+                />
               ) : (
                 <p>Камеры не настроены. Добавьте RTSP в <code>.env</code>.</p>
               )}
