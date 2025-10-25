@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Chart, BarController, BarElement, CategoryScale, LinearScale, Tooltip, Legend } from 'chart.js';
 Chart.register(BarController, BarElement, CategoryScale, LinearScale, Tooltip, Legend);
 
@@ -320,6 +320,7 @@ export default function Home() {
   const [viewMode, setViewMode] = useState<'live' | 'sim'>('live');
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
+  const [liveExpanded, setLiveExpanded] = useState(false);
 
   const resolveApiBase = useCallback(() => {
     const envBase = process.env.NEXT_PUBLIC_API_BASE;
@@ -338,6 +339,22 @@ export default function Home() {
   }, []);
 
   const [apiBase, setApiBase] = useState<string>(() => resolveApiBase());
+
+  const normalizedApiBase = useMemo(() => apiBase.replace(/\/$/, ''), [apiBase]);
+
+  const buildAbsoluteUrl = useCallback(
+    (path?: string | null) => {
+      if (!path) return null;
+      if (/^https?:\/\//i.test(path)) {
+        return path;
+      }
+      const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+      return `${normalizedApiBase}${normalizedPath}`;
+    },
+    [normalizedApiBase]
+  );
+
+  const [liveStreamOverride, setLiveStreamOverride] = useState<string | null>(null);
 
   useEffect(() => {
     setApiBase(resolveApiBase());
@@ -450,10 +467,53 @@ export default function Home() {
   }, [stats]);
 
   const firstCam = cameras[0]?.name;
+  const defaultLiveStreamUrl = firstCam
+    ? `${normalizedApiBase}/stream/${encodeURIComponent(firstCam)}`
+    : null;
+  const liveStreamUrl = liveStreamOverride ?? defaultLiveStreamUrl;
+
+  useEffect(() => {
+    setLiveStreamOverride(null);
+  }, [defaultLiveStreamUrl]);
+
+  const handleLiveError = useCallback(() => {
+    if (!firstCam || typeof window === 'undefined') return;
+    const fallbackBase = window.location.origin.replace(/\/$/, '');
+    const fallbackUrl = `${fallbackBase}/stream/${encodeURIComponent(firstCam)}`;
+    setLiveStreamOverride(prev => (prev === fallbackUrl ? prev : fallbackUrl));
+  }, [firstCam]);
 
   const handleSimEvent = useCallback((ev: SimEvent) => {
     setSimEvents(prev => [ev, ...prev].slice(0, 15));
   }, []);
+
+  useEffect(() => {
+    if (viewMode !== 'live') {
+      setLiveExpanded(false);
+    }
+  }, [viewMode]);
+
+  useEffect(() => {
+    if (!liveExpanded || typeof document === 'undefined') return;
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = originalOverflow;
+    };
+  }, [liveExpanded]);
+
+  useEffect(() => {
+    if (!liveExpanded || typeof document === 'undefined') return;
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setLiveExpanded(false);
+      }
+    };
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, [liveExpanded]);
 
   return (
     <main style={{ maxWidth: 1100, margin: '2rem auto', fontFamily: 'system-ui, sans-serif' }}>
@@ -597,19 +657,94 @@ export default function Home() {
 
           {viewMode === 'live' ? (
             <div>
-              <h4 style={{margin:'4px 0 12px'}}>
-                Живой просмотр{firstCam ? ` — ${firstCam}`: ''}
-              </h4>
-              {firstCam ? (
+              <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', gap:12}}>
+                <h4 style={{margin:'4px 0 12px'}}>
+                  Живой просмотр{firstCam ? ` — ${firstCam}`: ''}
+                </h4>
+                {firstCam && (
+                  <button
+                    onClick={() => setLiveExpanded(true)}
+                    style={{
+                      padding:'6px 12px',
+                      borderRadius:6,
+                      border:'1px solid #2563eb',
+                      backgroundColor:'#2563eb',
+                      color:'#fff',
+                      cursor:'pointer'
+                    }}
+                  >
+                    Увеличить
+                  </button>
+                )}
+              </div>
+              {firstCam && liveStreamUrl ? (
                 <img
-                  src={`${apiBase}/stream/${encodeURIComponent(firstCam)}`}
+                  src={liveStreamUrl}
                   alt="live"
-                  style={{width:'100%', borderRadius:8}}
+                  style={{width:'100%', borderRadius:8, cursor:'zoom-in'}}
+                  onClick={() => setLiveExpanded(true)}
+                  onError={handleLiveError}
                 />
               ) : (
                 <p>Камеры не настроены. Добавьте RTSP в <code>.env</code>.</p>
               )}
               <p style={{fontSize:12, color:'#666'}}>MJPEG-поток с наложенной разметкой (рамки, скелет, подписи).</p>
+              {liveExpanded && liveStreamUrl && (
+                <div
+                  onClick={() => setLiveExpanded(false)}
+                  style={{
+                    position:'fixed',
+                    inset:0,
+                    background:'rgba(15,23,42,0.7)',
+                    display:'flex',
+                    alignItems:'center',
+                    justifyContent:'center',
+                    zIndex:1000,
+                    padding:16
+                  }}
+                >
+                  <div
+                    onClick={event => event.stopPropagation()}
+                    style={{
+                      position:'relative',
+                      maxWidth:'90vw',
+                      maxHeight:'90vh',
+                      display:'flex',
+                      flexDirection:'column',
+                      gap:12
+                    }}
+                  >
+                    <button
+                      onClick={() => setLiveExpanded(false)}
+                      style={{
+                        alignSelf:'flex-end',
+                        padding:'6px 12px',
+                        borderRadius:6,
+                        border:'none',
+                        background:'#1e293b',
+                        color:'#fff',
+                        cursor:'pointer'
+                      }}
+                    >
+                      Закрыть
+                    </button>
+                    <img
+                      src={liveStreamUrl}
+                      alt="live expanded"
+                      style={{
+                        maxWidth:'90vw',
+                        maxHeight:'80vh',
+                        width:'100%',
+                        height:'100%',
+                        objectFit:'contain',
+                        borderRadius:12,
+                        boxShadow:'0 18px 36px rgba(15,23,42,0.45)'
+                      }}
+                      onError={handleLiveError}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           ) : (
             <div>
@@ -653,12 +788,14 @@ export default function Home() {
             </tr>
           </thead>
           <tbody>
-            {events.map((e, i) => (
+            {events.map((e, i) => {
+              const snapshotAbsoluteUrl = buildAbsoluteUrl(e.snapshot_url);
+              return (
               <tr key={i} style={{background: i % 2 === 0 ? '#fff' : '#f8fafc'}}>
                 <td style={{padding:10, borderBottom:'1px solid #e2e8f0'}}>
-                  {e.snapshot_url ? (
+                  {snapshotAbsoluteUrl ? (
                     <img
-                      src={`http://localhost:8000${e.snapshot_url}`}
+                      src={snapshotAbsoluteUrl}
                       alt="snapshot"
                       width={160}
                       style={{borderRadius:8, display:'block'}}
@@ -678,7 +815,8 @@ export default function Home() {
                   {e.confidence !== undefined ? e.confidence.toFixed(2) : '—'}
                 </td>
               </tr>
-            ))}
+            );
+            })}
             {events.length === 0 && (
               <tr>
                 <td colSpan={6} style={{padding:16, textAlign:'center', color:'#64748b'}}>
