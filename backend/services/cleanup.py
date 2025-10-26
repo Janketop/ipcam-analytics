@@ -4,23 +4,28 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Set, Tuple
+from collections import defaultdict
+from typing import Dict, List, Optional, Set, Tuple
 
 from fastapi import FastAPI
-from sqlalchemy import text
-from sqlalchemy.engine import Engine
+from sqlalchemy import select
 
+from backend.core.database import SessionFactory
+from backend.models import Event
 from backend.core.paths import SNAPSHOT_DIR
 
 
-async def perform_cleanup(engine: Engine, retention_days: int, state: dict) -> None:
+async def perform_cleanup(
+    session_factory: SessionFactory, retention_days: int, state: dict
+) -> None:
     """Запускает очистку в отдельном потоке и обновляет state."""
     started_at = datetime.now(timezone.utc)
     try:
         deleted_events, deleted_snapshots, cutoff_dt = await asyncio.to_thread(
             cleanup_expired_events_and_snapshots,
-            engine,
+            session_factory,
             retention_days,
+            started_at,
         )
         state.update(
             {
@@ -42,7 +47,7 @@ async def perform_cleanup(engine: Engine, retention_days: int, state: dict) -> N
 
 
 async def cleanup_loop(app: FastAPI, interval_hours: float) -> None:
-    engine = app.state.engine
+    session_factory = app.state.session_factory
     retention_days = app.state.retention_days
     cleanup_state = app.state.cleanup_state
     lock = app.state.cleanup_lock
@@ -50,43 +55,64 @@ async def cleanup_loop(app: FastAPI, interval_hours: float) -> None:
     interval_seconds = interval_hours * 3600
     while True:
         async with lock:
-            await perform_cleanup(engine, retention_days, cleanup_state)
+            await perform_cleanup(session_factory, retention_days, cleanup_state)
         try:
             await asyncio.sleep(interval_seconds)
         except asyncio.CancelledError:
             break
 
 
-def cleanup_expired_events_and_snapshots(engine: Engine, retention_days: int) -> Tuple[int, int, datetime]:
+def cleanup_expired_events_and_snapshots(
+    session_factory: SessionFactory,
+    retention_days: int,
+    started_at: Optional[datetime] = None,
+) -> Tuple[int, int, datetime]:
     cutoff_dt = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    if started_at is None:
+        started_at = datetime.now(timezone.utc)
 
-    delete_stmt = text("DELETE FROM events WHERE start_ts < now() - interval ':days day'")
-    with engine.begin() as con:
-        result = con.execute(delete_stmt, {"days": retention_days})
-        deleted_events = result.rowcount or 0
-
-        rows = con.execute(
-            text("SELECT snapshot_url FROM events WHERE snapshot_url IS NOT NULL")
+    with session_factory() as session:
+        deleted_events = (
+            session.query(Event)
+            .filter(Event.start_ts < cutoff_dt)
+            .delete(synchronize_session=False)
         )
-        snapshot_names: Set[str] = {
-            Path(url).name
-            for url in rows.scalars()
-            if isinstance(url, str) and url.strip()
-        }
+        session.commit()
+
+        snapshot_rows = session.execute(
+            select(Event.id, Event.snapshot_url).where(Event.snapshot_url.is_not(None))
+        ).all()
+
+    snapshot_events: Dict[str, List[int]] = defaultdict(list)
+    for event_id, url in snapshot_rows:
+        if not isinstance(url, str):
+            continue
+        url = url.strip()
+        if not url:
+            continue
+        snapshot_events[Path(url).name].append(event_id)
+
+    snapshot_names: Set[str] = set(snapshot_events.keys())
+    existing_files: Set[str] = set()
 
     deleted_snapshots = 0
     for file_path in SNAPSHOT_DIR.iterdir():
         if not file_path.is_file():
             continue
 
+        existing_files.add(file_path.name)
+
         file_should_be_removed = False
+        try:
+            created_at = datetime.fromtimestamp(file_path.stat().st_mtime, timezone.utc)
+        except OSError:
+            created_at = None
+
         if file_path.name not in snapshot_names:
+            if created_at is not None and created_at >= started_at:
+                continue
             file_should_be_removed = True
         else:
-            try:
-                created_at = datetime.fromtimestamp(file_path.stat().st_mtime, timezone.utc)
-            except OSError:
-                created_at = None
             if created_at is None or created_at < cutoff_dt:
                 file_should_be_removed = True
 
@@ -98,5 +124,21 @@ def cleanup_expired_events_and_snapshots(engine: Engine, retention_days: int) ->
                 continue
             except OSError:
                 continue
+
+    missing_snapshot_event_ids = [
+        event_id
+        for name, ids in snapshot_events.items()
+        if name not in existing_files
+        for event_id in ids
+    ]
+
+    if missing_snapshot_event_ids:
+        with session_factory() as session:
+            (
+                session.query(Event)
+                .filter(Event.id.in_(missing_snapshot_event_ids))
+                .update({Event.snapshot_url: None}, synchronize_session=False)
+            )
+            session.commit()
 
     return deleted_events, deleted_snapshots, cutoff_dt

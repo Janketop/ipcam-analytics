@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.core import config
-from backend.core.database import get_engine
+from backend.core.database import get_session_factory
 from backend.core.paths import STATIC_DIR
 from backend.services.ingest_manager import IngestManager
 from backend.services.notifications import EventBroadcaster
@@ -39,12 +39,12 @@ def create_app() -> FastAPI:
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     _setup_cors(app)
 
-    engine = get_engine()
-    ingest = IngestManager(engine)
+    session_factory = get_session_factory()
+    ingest = IngestManager(session_factory)
     broadcaster = EventBroadcaster()
     ingest.set_broadcaster(broadcaster.broadcast)
 
-    app.state.engine = engine
+    app.state.session_factory = session_factory
     app.state.ingest_manager = ingest
     app.state.event_broadcaster = broadcaster
     app.state.cleanup_state = {
