@@ -198,60 +198,6 @@ class IngestWorker(Thread):
         }
         return info
 
-
-def cleanup_expired_events_and_snapshots(engine, retention_days: int) -> Tuple[int, int, datetime]:
-    """Удаляем старые события и несоответствующие снимки.
-
-    Возвращает кортеж (кол-во удалённых событий, кол-во удалённых файлов, пороговая дата).
-    """
-
-    cutoff_dt = datetime.now(timezone.utc) - timedelta(days=retention_days)
-
-    # Сначала удаляем записи старше Retention периода
-    delete_stmt = text("DELETE FROM events WHERE start_ts < now() - interval ':days day'")
-    with engine.begin() as con:
-        result = con.execute(delete_stmt, {"days": retention_days})
-        deleted_events = result.rowcount or 0
-
-        # Получаем список всех актуальных снапшотов после очистки
-        rows = con.execute(
-            text("SELECT snapshot_url FROM events WHERE snapshot_url IS NOT NULL")
-        )
-        snapshot_names: Set[str] = {
-            Path(url).name
-            for url in rows.scalars()
-            if isinstance(url, str) and url.strip()
-        }
-
-    deleted_snapshots = 0
-    for file_path in SNAPSHOT_DIR.iterdir():
-        if not file_path.is_file():
-            continue
-
-        file_should_be_removed = False
-
-        if file_path.name not in snapshot_names:
-            file_should_be_removed = True
-        else:
-            try:
-                created_at = datetime.fromtimestamp(file_path.stat().st_mtime, timezone.utc)
-            except OSError:
-                created_at = None
-            if created_at is None or created_at < cutoff_dt:
-                file_should_be_removed = True
-
-        if file_should_be_removed:
-            try:
-                file_path.unlink()
-                deleted_snapshots += 1
-            except FileNotFoundError:
-                continue
-            except OSError:
-                # Если удалить не удалось (например, нет прав) — пропускаем файл
-                continue
-
-    return deleted_events, deleted_snapshots, cutoff_dt
-
     def run(self):
         reconnect_delay = env_float("RTSP_RECONNECT_DELAY", 5.0, min_value=0.5)
         max_failed_reads = env_int("RTSP_MAX_FAILED_READS", 25, min_value=1)
@@ -763,6 +709,62 @@ def cleanup_expired_events_and_snapshots(engine, retention_days: int) -> Tuple[i
 
     def set_main_loop(self, loop):
         self.main_loop = loop
+
+
+def cleanup_expired_events_and_snapshots(engine, retention_days: int) -> Tuple[int, int, datetime]:
+    """Удаляем старые события и несоответствующие снимки.
+
+    Возвращает кортеж (кол-во удалённых событий, кол-во удалённых файлов, пороговая дата).
+    """
+
+    cutoff_dt = datetime.now(timezone.utc) - timedelta(days=retention_days)
+
+    # Сначала удаляем записи старше Retention периода
+    delete_stmt = text("DELETE FROM events WHERE start_ts < now() - interval ':days day'")
+    with engine.begin() as con:
+        result = con.execute(delete_stmt, {"days": retention_days})
+        deleted_events = result.rowcount or 0
+
+        # Получаем список всех актуальных снапшотов после очистки
+        rows = con.execute(
+            text("SELECT snapshot_url FROM events WHERE snapshot_url IS NOT NULL")
+        )
+        snapshot_names: Set[str] = {
+            Path(url).name
+            for url in rows.scalars()
+            if isinstance(url, str) and url.strip()
+        }
+
+    deleted_snapshots = 0
+    for file_path in SNAPSHOT_DIR.iterdir():
+        if not file_path.is_file():
+            continue
+
+        file_should_be_removed = False
+
+        if file_path.name not in snapshot_names:
+            file_should_be_removed = True
+        else:
+            try:
+                created_at = datetime.fromtimestamp(file_path.stat().st_mtime, timezone.utc)
+            except OSError:
+                created_at = None
+            if created_at is None or created_at < cutoff_dt:
+                file_should_be_removed = True
+
+        if file_should_be_removed:
+            try:
+                file_path.unlink()
+                deleted_snapshots += 1
+            except FileNotFoundError:
+                continue
+            except OSError:
+                # Если удалить не удалось (например, нет прав) — пропускаем файл
+                continue
+
+    return deleted_events, deleted_snapshots, cutoff_dt
+
+
 
 class IngestManager:
     def __init__(self, engine, main_loop=None):
