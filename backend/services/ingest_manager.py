@@ -1,13 +1,12 @@
 """Менеджер потоков захвата и обработки видеопотоков."""
 from __future__ import annotations
 
-import os
 from typing import Awaitable, Callable, List, Optional
 
+from backend.core.config import settings
 from backend.core.database import SessionFactory
 from backend.models import Camera
 from backend.services.ingest_worker import IngestWorker
-from backend.utils.env import env_flag
 
 
 class IngestManager:
@@ -36,7 +35,7 @@ class IngestManager:
                 .all()
             )
 
-        face_blur = env_flag("FACE_BLUR", False)
+        face_blur = settings.face_blur
         for camera in cameras:
             worker = IngestWorker(
                 self.session_factory,
@@ -97,8 +96,8 @@ class IngestManager:
             "cuda_device_count": cuda_device_count,
             "cuda_name": cuda_name,
             "mps_available": mps_available,
-            "env_device": os.getenv("YOLO_DEVICE", "auto"),
-            "cuda_visible_devices": os.getenv("CUDA_VISIBLE_DEVICES"),
+            "env_device": settings.yolo_device,
+            "cuda_visible_devices": settings.cuda_visible_devices,
         }
 
         return {

@@ -5,7 +5,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends
 
-from backend.core import config
+from backend.core.config import settings
 from backend.core.dependencies import get_cleanup_state
 
 router = APIRouter()
@@ -17,9 +17,9 @@ def health(cleanup_state=Depends(get_cleanup_state)):
     cutoff = cleanup_state.get("cutoff")
     return {
         "ok": True,
-        "face_blur": config.FACE_BLUR,
-        "retention_days": config.RETENTION_DAYS,
-        "cleanup_interval_hours": config.CLEANUP_INTERVAL_HOURS,
+        "face_blur": settings.face_blur,
+        "retention_days": settings.retention_days,
+        "cleanup_interval_hours": settings.retention_cleanup_interval_hours,
         "cleanup": {
             "last_run": last_run.isoformat() if isinstance(last_run, datetime) else None,
             "cutoff": cutoff.isoformat() if isinstance(cutoff, datetime) else None,

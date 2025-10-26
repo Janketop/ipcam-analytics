@@ -9,12 +9,13 @@ from threading import Thread
 from typing import Awaitable, Callable, Optional
 
 import cv2
+
+from backend.core.config import settings
 from backend.core.database import SessionFactory
 from backend.models import Event
 
 from backend.services.ai_detector import AIDetector
 from backend.services.snapshots import save_snapshot
-from backend.utils.env import env_flag, env_float, env_int
 
 
 class IngestWorker(Thread):
@@ -35,7 +36,7 @@ class IngestWorker(Thread):
         self.url = rtsp_url
         self.stop_flag = False
 
-        self.visualize = env_flag("VISUALIZE", False)
+        self.visualize = settings.visualize
         self.detector = AIDetector(name, face_blur=face_blur, visualize=self.visualize)
         self.score_buffer: deque[float] = deque(maxlen=self.detector.score_smoothing)
         self.last_visual_jpeg: Optional[bytes] = None
@@ -60,10 +61,10 @@ class IngestWorker(Thread):
         return info
 
     def run(self) -> None:  # noqa: C901
-        reconnect_delay = env_float("RTSP_RECONNECT_DELAY", 5.0, min_value=0.5)
-        max_failed_reads = env_int("RTSP_MAX_FAILED_READS", 25, min_value=1)
-        fps_skip = env_int("INGEST_FPS_SKIP", 2, min_value=1)
-        flush_timeout = env_float("INGEST_FLUSH_TIMEOUT", 0.2, min_value=0.0)
+        reconnect_delay = settings.rtsp_reconnect_delay
+        max_failed_reads = settings.rtsp_max_failed_reads
+        fps_skip = settings.ingest_fps_skip
+        flush_timeout = settings.ingest_flush_timeout
 
         while not self.stop_flag:
             cap = cv2.VideoCapture(self.url)
