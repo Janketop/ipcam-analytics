@@ -388,9 +388,18 @@ export default function Home() {
       .then(r => r.json()).then(d => setCameras(d.cameras || []))
       .catch(err => console.error('Не удалось получить список камер:', err));
 
-    const wsProtocol = base.startsWith('https') ? 'wss' : 'ws';
-    const wsHost = base.replace(/^https?:\/\//, '');
-    const ws = new WebSocket(`${wsProtocol}://${wsHost}/ws/events`);
+    const wsUrl = new URL('/ws/events', `${base}/`);
+    wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+
+    const envBase = process.env.NEXT_PUBLIC_API_BASE;
+    if (envBase) {
+      const parsedEnvBase = new URL(envBase);
+      if (parsedEnvBase.pathname && parsedEnvBase.pathname !== '/') {
+        console.info('NEXT_PUBLIC_API_BASE содержит путь, WebSocket URL:', wsUrl.toString());
+      }
+    }
+
+    const ws = new WebSocket(wsUrl.toString());
     ws.onmessage = (msg) => {
       const data = JSON.parse(msg.data);
       setEvents(prev => [
