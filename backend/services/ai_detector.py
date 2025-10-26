@@ -1,7 +1,6 @@
 """Логика AI-детекции для обработки кадров."""
 from __future__ import annotations
 
-import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -15,20 +14,19 @@ try:
 except Exception:  # pragma: no cover - torch may отсутствовать в окружении
     torch = None
 
+from backend.core.config import settings
 from backend.services.snapshots import load_face_cascade, prepare_snapshot
-from backend.utils.env import env_float, env_int
 
 PHONE_CLASS = "cell phone"
 
 
-def resolve_device(preferred: Optional[str] = None) -> str:
+def resolve_device(preferred: Optional[str] = None, cuda_env: Optional[str] = None) -> str:
     """Выбирает устройство для инференса: GPU, если доступно, иначе CPU."""
     if preferred and preferred.strip().lower() not in {"auto", ""}:
         return preferred
 
     if torch is not None:
         if torch.cuda.is_available():
-            cuda_env = os.getenv("CUDA_VISIBLE_DEVICES")
             if cuda_env:
                 first = cuda_env.split(",")[0].strip()
                 if first:
@@ -47,10 +45,10 @@ class AIDetector:
         self.face_blur = face_blur
         self.visualize = visualize
 
-        det_weights = os.getenv("YOLO_DET_MODEL", "yolov8n.pt")
-        pose_weights = os.getenv("YOLO_POSE_MODEL", "yolov8n-pose.pt")
-        self.device_preference = os.getenv("YOLO_DEVICE", "auto")
-        self.device = resolve_device(self.device_preference)
+        det_weights = settings.yolo_det_model
+        pose_weights = settings.yolo_pose_model
+        self.device_preference = settings.yolo_device
+        self.device = resolve_device(self.device_preference, settings.cuda_visible_devices)
 
         self.det = YOLO(det_weights)
         self.pose = YOLO(pose_weights)
@@ -71,28 +69,28 @@ class AIDetector:
 
         self.predict_device = None if self.device in {"cpu", "auto"} else self.device
 
-        self.det_imgsz = env_int("YOLO_IMAGE_SIZE", 640, min_value=32)
-        self.det_conf = env_float("PHONE_DET_CONF", 0.3, min_value=0.05)
-        self.pose_conf = env_float("POSE_DET_CONF", 0.3, min_value=0.05)
-        self.phone_score_threshold = env_float("PHONE_SCORE_THRESHOLD", 0.6, min_value=0.1)
-        self.phone_hand_dist_ratio = env_float("PHONE_HAND_DIST_RATIO", 0.35, min_value=0.05)
-        self.phone_head_dist_ratio = env_float("PHONE_HEAD_DIST_RATIO", 0.45, min_value=0.05)
-        self.pose_only_score_threshold = env_float("POSE_ONLY_SCORE_THRESHOLD", 0.55, min_value=0.1)
-        self.pose_only_head_ratio = env_float("POSE_ONLY_HEAD_RATIO", 0.5, min_value=0.05)
-        self.pose_wrists_dist_ratio = env_float("POSE_WRISTS_DIST_RATIO", 0.25, min_value=0.05)
-        self.pose_tilt_threshold = env_float("POSE_TILT_THRESHOLD", 0.22, min_value=0.05)
-        self.score_smoothing = env_int("PHONE_SCORE_SMOOTHING", 5, min_value=1)
+        self.det_imgsz = settings.yolo_image_size
+        self.det_conf = settings.phone_det_conf
+        self.pose_conf = settings.pose_det_conf
+        self.phone_score_threshold = settings.phone_score_threshold
+        self.phone_hand_dist_ratio = settings.phone_hand_dist_ratio
+        self.phone_head_dist_ratio = settings.phone_head_dist_ratio
+        self.pose_only_score_threshold = settings.pose_only_score_threshold
+        self.pose_only_head_ratio = settings.pose_only_head_ratio
+        self.pose_wrists_dist_ratio = settings.pose_wrists_dist_ratio
+        self.pose_tilt_threshold = settings.pose_tilt_threshold
+        self.score_smoothing = settings.phone_score_smoothing
 
         names_map = getattr(self.det.model, "names", None) or getattr(self.det, "names", {})
         self.det_names = {int(k): v for k, v in names_map.items()} if isinstance(names_map, dict) else {}
         self.car_class_ids = {idx for idx, name in self.det_names.items() if name in {"car", "truck", "bus"}}
-        self.car_conf_threshold = env_float("CAR_DET_CONF", 0.35, min_value=0.05)
-        self.min_car_fg_ratio = env_float("CAR_MOVING_FG_RATIO", 0.05, min_value=0.0)
-        self.car_event_cooldown = env_float("CAR_EVENT_COOLDOWN", 8.0, min_value=1.0)
+        self.car_conf_threshold = settings.car_det_conf
+        self.min_car_fg_ratio = settings.car_moving_fg_ratio
+        self.car_event_cooldown = settings.car_event_cooldown
 
         self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16, detectShadows=True)
 
-        self.ocr_langs = os.getenv("PLATE_OCR_LANGS", "ru,en")
+        self.ocr_langs = settings.plate_ocr_langs
         self.ocr_reader: Optional[Reader] = None
         self._ocr_failed = False
 

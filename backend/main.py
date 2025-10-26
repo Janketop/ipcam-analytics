@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import List, Tuple
 
 from fastapi import FastAPI
 
 from backend.api.routes import cameras, events, health, stats
 from backend.core.app import create_app
+from backend.core.config import settings
 from backend.core.database import SessionFactory
 from backend.models import Camera
 from backend.services.cleanup import cleanup_loop, perform_cleanup
@@ -21,7 +21,7 @@ app.include_router(stats.router)
 
 
 async def _init_default_cameras(session_factory: SessionFactory) -> None:
-    sources = os.getenv("RTSP_SOURCES", "")
+    sources = settings.rtsp_sources
     if not sources.strip():
         return
     entries: List[Tuple[str, str]] = []
