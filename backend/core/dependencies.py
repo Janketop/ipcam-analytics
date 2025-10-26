@@ -1,7 +1,10 @@
 """Общие зависимости FastAPI."""
 from __future__ import annotations
 
+from typing import Generator
+
 from fastapi import Request, WebSocket
+from sqlalchemy.orm import Session
 
 from backend.services.notifications import EventBroadcaster
 
@@ -12,8 +15,15 @@ def _get_event_broadcaster(app) -> EventBroadcaster:
     return app.state.event_broadcaster
 
 
-def get_engine(request: Request):
-    return request.app.state.engine
+def get_session(request: Request) -> Generator[Session, None, None]:
+    """Создаёт и возвращает ORM-сессию для запроса."""
+
+    session_factory = request.app.state.session_factory
+    session: Session = session_factory()
+    try:
+        yield session
+    finally:
+        session.close()
 
 
 def get_ingest_manager(request: Request):

@@ -6,10 +6,11 @@ import os
 from typing import List, Tuple
 
 from fastapi import FastAPI
-from sqlalchemy import text
 
 from backend.api.routes import cameras, events, health, stats
 from backend.core.app import create_app
+from backend.core.database import SessionFactory
+from backend.models import Camera
 from backend.services.cleanup import cleanup_loop, perform_cleanup
 
 app = create_app()
@@ -19,7 +20,7 @@ app.include_router(events.router)
 app.include_router(stats.router)
 
 
-async def _init_default_cameras(engine) -> None:
+async def _init_default_cameras(session_factory: SessionFactory) -> None:
     sources = os.getenv("RTSP_SOURCES", "")
     if not sources.strip():
         return
@@ -34,23 +35,21 @@ async def _init_default_cameras(engine) -> None:
     if not entries:
         return
 
-    with engine.begin() as con:
+    with session_factory() as session:
         for name, url in entries:
-            con.execute(
-                text(
-                    "INSERT INTO cameras(name, rtsp_url) VALUES (:n,:u) "
-                    "ON CONFLICT (name) DO NOTHING"
-                ),
-                {"n": name, "u": url},
-            )
+            exists = session.query(Camera).filter(Camera.name == name).first()
+            if exists:
+                continue
+            session.add(Camera(name=name, rtsp_url=url))
+        session.commit()
 
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    engine = app.state.engine
+    session_factory = app.state.session_factory
     ingest = app.state.ingest_manager
 
-    await _init_default_cameras(engine)
+    await _init_default_cameras(session_factory)
 
     main_loop = asyncio.get_running_loop()
     ingest.set_main_loop(main_loop)
@@ -58,7 +57,7 @@ async def startup_event() -> None:
 
     # Первый запуск очистки делаем вручную, чтобы не ждать таймер
     async with app.state.cleanup_lock:
-        await perform_cleanup(engine, app.state.retention_days, app.state.cleanup_state)
+        await perform_cleanup(session_factory, app.state.retention_days, app.state.cleanup_state)
 
     task = asyncio.create_task(
         cleanup_loop(app, app.state.cleanup_interval_hours),

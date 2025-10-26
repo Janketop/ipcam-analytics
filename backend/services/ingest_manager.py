@@ -4,15 +4,15 @@ from __future__ import annotations
 import os
 from typing import Awaitable, Callable, List, Optional
 
-from sqlalchemy import text
-
+from backend.core.database import SessionFactory
+from backend.models import Camera
 from backend.services.ingest_worker import IngestWorker
 from backend.utils.env import env_flag
 
 
 class IngestManager:
-    def __init__(self, engine, main_loop=None) -> None:
-        self.engine = engine
+    def __init__(self, session_factory: SessionFactory, main_loop=None) -> None:
+        self.session_factory = session_factory
         self.workers: List[IngestWorker] = []
         self.broadcaster: Optional[Callable[[dict], Awaitable[None]]] = None
         self.main_loop = main_loop
@@ -28,15 +28,21 @@ class IngestManager:
             worker.set_main_loop(loop)
 
     async def start_all(self) -> None:
-        with self.engine.connect() as con:
-            cams = con.execute(text("SELECT id,name,rtsp_url FROM cameras WHERE active=true")).mappings().all()
+        with self.session_factory() as session:
+            cameras = (
+                session.query(Camera)
+                .filter(Camera.active.is_(True))
+                .order_by(Camera.id)
+                .all()
+            )
+
         face_blur = env_flag("FACE_BLUR", False)
-        for camera in cams:
+        for camera in cameras:
             worker = IngestWorker(
-                self.engine,
-                camera["id"],
-                camera["name"],
-                camera["rtsp_url"],
+                self.session_factory,
+                camera.id,
+                camera.name,
+                camera.rtsp_url,
                 face_blur=face_blur,
                 broadcaster=self.broadcaster,
                 main_loop=self.main_loop,
