@@ -4,7 +4,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, WebSocket
 from sqlalchemy import text
 
-from backend.core.dependencies import get_broadcaster, get_engine, get_ingest_manager
+from backend.core.dependencies import (
+    get_engine,
+    get_ingest_manager,
+    get_ws_broadcaster,
+)
 
 router = APIRouter()
 
@@ -31,5 +35,5 @@ def runtime(ingest=Depends(get_ingest_manager)):
 
 
 @router.websocket("/ws/events")
-async def ws_events(ws: WebSocket, broadcaster=Depends(get_broadcaster)):
+async def ws_events(ws: WebSocket, broadcaster=Depends(get_ws_broadcaster)):
     await broadcaster.handle_connection(ws)
