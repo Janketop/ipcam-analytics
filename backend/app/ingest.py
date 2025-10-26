@@ -74,7 +74,7 @@ def resolve_device(preferred: Optional[str] = None) -> str:
 
 
 class IngestWorker(Thread):
-    def __init__(self, engine, cam_id, name, rtsp_url, face_blur=True, broadcaster=None):
+    def __init__(self, engine, cam_id, name, rtsp_url, face_blur=True, broadcaster=None, main_loop=None):
         super().__init__(daemon=True)
         self.engine = engine
         self.cam_id = cam_id
@@ -82,6 +82,7 @@ class IngestWorker(Thread):
         self.url = rtsp_url
         self.face_blur = face_blur
         self.broadcaster = broadcaster
+        self.main_loop = main_loop
         self.stop_flag = False
 
         self.visualize = env_flag("VISUALIZE", False)
@@ -335,19 +336,33 @@ class IngestWorker(Thread):
                                 "m": json.dumps(payload["meta"]),
                             },
                         )
-                    if self.broadcaster:
-                        asyncio.run(
-                            self.broadcaster(
-                                {
-                                    "camera": self.name,
-                                    "type": payload["type"],
-                                    "ts": payload["ts"].isoformat(),
-                                    "confidence": payload["confidence"],
-                                    "snapshot_url": snap_url,
-                                    "meta": payload["meta"],
-                                }
+                    if self.broadcaster and self.main_loop and not self.main_loop.is_closed():
+                        try:
+                            future = asyncio.run_coroutine_threadsafe(
+                                self.broadcaster(
+                                    {
+                                        "camera": self.name,
+                                        "type": payload["type"],
+                                        "ts": payload["ts"].isoformat(),
+                                        "confidence": payload["confidence"],
+                                        "snapshot_url": snap_url,
+                                        "meta": payload["meta"],
+                                    }
+                                ),
+                                self.main_loop,
                             )
-                        )
+
+                            def _finalize(fut):
+                                try:
+                                    fut.result()
+                                except (asyncio.CancelledError, RuntimeError):
+                                    pass
+                                except Exception:
+                                    pass
+
+                            future.add_done_callback(_finalize)
+                        except (RuntimeError, ValueError):
+                            pass
 
             cap.release()
             if self.stop_flag:
@@ -692,14 +707,25 @@ class IngestWorker(Thread):
         cv2.imwrite(str(path), img_bgr)
         return f"/static/snaps/{fname}"
 
+    def set_main_loop(self, loop):
+        self.main_loop = loop
+
 class IngestManager:
-    def __init__(self, engine):
+    def __init__(self, engine, main_loop=None):
         self.engine = engine
         self.workers = []
         self.broadcaster = None
+        self.main_loop = main_loop
 
     def set_broadcaster(self, fn):
         self.broadcaster = fn
+        for worker in self.workers:
+            worker.broadcaster = fn
+
+    def set_main_loop(self, loop):
+        self.main_loop = loop
+        for worker in self.workers:
+            worker.set_main_loop(loop)
 
     async def start_all(self):
         from sqlalchemy import text
@@ -714,6 +740,7 @@ class IngestManager:
                 c["rtsp_url"],
                 face_blur=face_blur,
                 broadcaster=self.broadcaster,
+                main_loop=self.main_loop,
             )
             w.start()
             self.workers.append(w)
