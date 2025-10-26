@@ -19,7 +19,7 @@ services:
     ports:
       - "${BACKEND_PORT}:8000"
     volumes:
-      - ./backend/app:/app/app
+      - ./backend:/app
     environment:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
