@@ -7,19 +7,22 @@ from pathlib import Path
 from typing import Set, Tuple
 
 from fastapi import FastAPI
-from sqlalchemy import text
-from sqlalchemy.engine import Engine
+from sqlalchemy import select
 
+from backend.core.database import SessionFactory
+from backend.models import Event
 from backend.core.paths import SNAPSHOT_DIR
 
 
-async def perform_cleanup(engine: Engine, retention_days: int, state: dict) -> None:
+async def perform_cleanup(
+    session_factory: SessionFactory, retention_days: int, state: dict
+) -> None:
     """Запускает очистку в отдельном потоке и обновляет state."""
     started_at = datetime.now(timezone.utc)
     try:
         deleted_events, deleted_snapshots, cutoff_dt = await asyncio.to_thread(
             cleanup_expired_events_and_snapshots,
-            engine,
+            session_factory,
             retention_days,
         )
         state.update(
@@ -42,7 +45,7 @@ async def perform_cleanup(engine: Engine, retention_days: int, state: dict) -> N
 
 
 async def cleanup_loop(app: FastAPI, interval_hours: float) -> None:
-    engine = app.state.engine
+    session_factory = app.state.session_factory
     retention_days = app.state.retention_days
     cleanup_state = app.state.cleanup_state
     lock = app.state.cleanup_lock
@@ -50,29 +53,33 @@ async def cleanup_loop(app: FastAPI, interval_hours: float) -> None:
     interval_seconds = interval_hours * 3600
     while True:
         async with lock:
-            await perform_cleanup(engine, retention_days, cleanup_state)
+            await perform_cleanup(session_factory, retention_days, cleanup_state)
         try:
             await asyncio.sleep(interval_seconds)
         except asyncio.CancelledError:
             break
 
 
-def cleanup_expired_events_and_snapshots(engine: Engine, retention_days: int) -> Tuple[int, int, datetime]:
+def cleanup_expired_events_and_snapshots(
+    session_factory: SessionFactory, retention_days: int
+) -> Tuple[int, int, datetime]:
     cutoff_dt = datetime.now(timezone.utc) - timedelta(days=retention_days)
 
-    delete_stmt = text("DELETE FROM events WHERE start_ts < now() - interval ':days day'")
-    with engine.begin() as con:
-        result = con.execute(delete_stmt, {"days": retention_days})
-        deleted_events = result.rowcount or 0
-
-        rows = con.execute(
-            text("SELECT snapshot_url FROM events WHERE snapshot_url IS NOT NULL")
+    with session_factory() as session:
+        deleted_events = (
+            session.query(Event)
+            .filter(Event.start_ts < cutoff_dt)
+            .delete(synchronize_session=False)
         )
-        snapshot_names: Set[str] = {
-            Path(url).name
-            for url in rows.scalars()
-            if isinstance(url, str) and url.strip()
-        }
+        session.commit()
+
+        snapshot_urls = session.scalars(
+            select(Event.snapshot_url).where(Event.snapshot_url.is_not(None))
+        ).all()
+
+    snapshot_names: Set[str] = {
+        Path(url).name for url in snapshot_urls if isinstance(url, str) and url.strip()
+    }
 
     deleted_snapshots = 0
     for file_path in SNAPSHOT_DIR.iterdir():

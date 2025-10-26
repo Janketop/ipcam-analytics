@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
@@ -10,7 +9,8 @@ from threading import Thread
 from typing import Awaitable, Callable, Optional
 
 import cv2
-from sqlalchemy import text
+from backend.core.database import SessionFactory
+from backend.models import Event
 
 from backend.services.ai_detector import AIDetector
 from backend.services.snapshots import save_snapshot
@@ -20,7 +20,7 @@ from backend.utils.env import env_flag, env_float, env_int
 class IngestWorker(Thread):
     def __init__(
         self,
-        engine,
+        session_factory: SessionFactory,
         cam_id: int,
         name: str,
         rtsp_url: str,
@@ -29,7 +29,7 @@ class IngestWorker(Thread):
         main_loop: Optional[asyncio.AbstractEventLoop] = None,
     ) -> None:
         super().__init__(daemon=True)
-        self.engine = engine
+        self.session_factory = session_factory
         self.cam_id = cam_id
         self.name = name
         self.url = rtsp_url
@@ -177,34 +177,53 @@ class IngestWorker(Thread):
                         }
                     )
 
-                for payload in events_to_store:
-                    snap_url = save_snapshot(payload["snapshot"], payload["ts"], self.name, event_type=payload["kind"])
-                    with self.engine.begin() as con:
-                        con.execute(
-                            text(
-                                "INSERT INTO events(camera_id,type,start_ts,confidence,snapshot_url,meta) "
-                                "VALUES (:c,:t,:s,:conf,:u,CAST(:m AS jsonb))"
-                            ),
-                            {
-                                "c": self.cam_id,
-                                "t": payload["type"],
-                                "s": payload["ts"],
-                                "conf": payload["confidence"],
-                                "u": snap_url,
-                                "m": json.dumps(payload["meta"]),
-                            },
-                        )
+                persisted_events = []
+                if events_to_store:
+                    with self.session_factory() as session:
+                        for payload in events_to_store:
+                            snapshot_img = payload.get("snapshot")
+                            ts = payload["ts"]
+                            meta = dict(payload.get("meta") or {})
+                            snap_url = save_snapshot(
+                                snapshot_img,
+                                ts,
+                                self.name,
+                                event_type=payload["kind"],
+                            )
+                            event = Event(
+                                camera_id=self.cam_id,
+                                type=payload["type"],
+                                start_ts=ts,
+                                confidence=payload["confidence"],
+                                snapshot_url=snap_url,
+                                meta=meta,
+                            )
+                            session.add(event)
+                            persisted_events.append(
+                                {
+                                    "camera": self.name,
+                                    "type": payload["type"],
+                                    "ts": ts,
+                                    "confidence": payload["confidence"],
+                                    "snapshot_url": snap_url,
+                                    "meta": meta,
+                                }
+                            )
+                        session.commit()
+                else:
+                    persisted_events = []
+                for stored in persisted_events:
                     if self.broadcaster and self.main_loop and not self.main_loop.is_closed():
                         try:
                             future = asyncio.run_coroutine_threadsafe(
                                 self.broadcaster(
                                     {
-                                        "camera": self.name,
-                                        "type": payload["type"],
-                                        "ts": payload["ts"].isoformat(),
-                                        "confidence": payload["confidence"],
-                                        "snapshot_url": snap_url,
-                                        "meta": payload["meta"],
+                                        "camera": stored["camera"],
+                                        "type": stored["type"],
+                                        "ts": stored["ts"].isoformat(),
+                                        "confidence": stored["confidence"],
+                                        "snapshot_url": stored["snapshot_url"],
+                                        "meta": stored["meta"],
                                     }
                                 ),
                                 self.main_loop,
