@@ -2,7 +2,7 @@ import os
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,10 +12,11 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 from .storage import get_engine
-from .ingest import IngestManager, env_flag
+from .ingest import IngestManager, env_flag, cleanup_expired_events_and_snapshots
 
 FACE_BLUR = env_flag("FACE_BLUR", False)
 RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "7"))
+CLEANUP_INTERVAL_HOURS = float(os.getenv("RETENTION_CLEANUP_INTERVAL_HOURS", "6"))
 
 app = FastAPI(title="IPCam Analytics (RU)")
 
@@ -40,6 +41,57 @@ app.add_middleware(
 
 engine = get_engine()
 ingest = IngestManager(engine)
+
+cleanup_state = {
+    "last_run": None,  # type: Optional[datetime]
+    "deleted_events": 0,
+    "deleted_snapshots": 0,
+    "error": None,
+    "cutoff": None,
+}
+
+cleanup_lock = asyncio.Lock()
+background_tasks: List[asyncio.Task] = []
+
+
+async def perform_cleanup():
+    async with cleanup_lock:
+        started_at = datetime.now(timezone.utc)
+        try:
+            deleted_events, deleted_snapshots, cutoff_dt = await asyncio.to_thread(
+                cleanup_expired_events_and_snapshots,
+                engine,
+                RETENTION_DAYS,
+            )
+            cleanup_state.update(
+                {
+                    "last_run": started_at,
+                    "deleted_events": deleted_events,
+                    "deleted_snapshots": deleted_snapshots,
+                    "error": None,
+                    "cutoff": cutoff_dt,
+                }
+            )
+        except Exception as exc:  # pragma: no cover - логирование ошибок фоновой задачи
+            cleanup_state.update(
+                {
+                    "last_run": started_at,
+                    "error": str(exc),
+                    "cutoff": None,
+                }
+            )
+
+
+async def cleanup_loop():
+    # Минимальный интервал в 1 час, чтобы избежать слишком частых запусков по ошибке
+    interval_hours = max(CLEANUP_INTERVAL_HOURS, 1.0)
+    interval_seconds = interval_hours * 3600
+    while True:
+        await perform_cleanup()
+        try:
+            await asyncio.sleep(interval_seconds)
+        except asyncio.CancelledError:  # pragma: no cover - корректное завершение
+            break
 
 class CameraCreate(BaseModel):
     name: str
@@ -73,9 +125,38 @@ async def startup_event():
     ingest.set_main_loop(main_loop)
     await ingest.start_all()
 
+    task = asyncio.create_task(cleanup_loop(), name="retention-cleanup")
+    background_tasks.append(task)
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    ingest.stop_all()
+    for task in background_tasks:
+        task.cancel()
+    for task in background_tasks:
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
 @app.get("/health")
 def health():
-    return {"ok": True, "face_blur": FACE_BLUR, "retention_days": RETENTION_DAYS}
+    last_run = cleanup_state.get("last_run")
+    cutoff = cleanup_state.get("cutoff")
+    return {
+        "ok": True,
+        "face_blur": FACE_BLUR,
+        "retention_days": RETENTION_DAYS,
+        "cleanup_interval_hours": CLEANUP_INTERVAL_HOURS,
+        "cleanup": {
+            "last_run": last_run.isoformat() if isinstance(last_run, datetime) else None,
+            "cutoff": cutoff.isoformat() if isinstance(cutoff, datetime) else None,
+            "deleted_events": cleanup_state.get("deleted_events", 0),
+            "deleted_snapshots": cleanup_state.get("deleted_snapshots", 0),
+            "error": cleanup_state.get("error"),
+        },
+    }
 
 
 @app.get("/runtime")
