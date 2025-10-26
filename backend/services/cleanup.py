@@ -4,7 +4,8 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, Set, Tuple
+from collections import defaultdict
+from typing import Dict, List, Optional, Set, Tuple
 
 from fastapi import FastAPI
 from sqlalchemy import select
@@ -78,18 +79,28 @@ def cleanup_expired_events_and_snapshots(
         )
         session.commit()
 
-        snapshot_urls = session.scalars(
-            select(Event.snapshot_url).where(Event.snapshot_url.is_not(None))
+        snapshot_rows = session.execute(
+            select(Event.id, Event.snapshot_url).where(Event.snapshot_url.is_not(None))
         ).all()
 
-    snapshot_names: Set[str] = {
-        Path(url).name for url in snapshot_urls if isinstance(url, str) and url.strip()
-    }
+    snapshot_events: Dict[str, List[int]] = defaultdict(list)
+    for event_id, url in snapshot_rows:
+        if not isinstance(url, str):
+            continue
+        url = url.strip()
+        if not url:
+            continue
+        snapshot_events[Path(url).name].append(event_id)
+
+    snapshot_names: Set[str] = set(snapshot_events.keys())
+    existing_files: Set[str] = set()
 
     deleted_snapshots = 0
     for file_path in SNAPSHOT_DIR.iterdir():
         if not file_path.is_file():
             continue
+
+        existing_files.add(file_path.name)
 
         file_should_be_removed = False
         try:
@@ -113,5 +124,21 @@ def cleanup_expired_events_and_snapshots(
                 continue
             except OSError:
                 continue
+
+    missing_snapshot_event_ids = [
+        event_id
+        for name, ids in snapshot_events.items()
+        if name not in existing_files
+        for event_id in ids
+    ]
+
+    if missing_snapshot_event_ids:
+        with session_factory() as session:
+            (
+                session.query(Event)
+                .filter(Event.id.in_(missing_snapshot_event_ids))
+                .update({Event.snapshot_url: None}, synchronize_session=False)
+            )
+            session.commit()
 
     return deleted_events, deleted_snapshots, cutoff_dt
