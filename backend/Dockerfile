@@ -27,6 +27,6 @@ RUN pip install --no-cache-dir --default-timeout=${PIP_DEFAULT_TIMEOUT} -r requi
     && pip uninstall -y opencv-python || true \
     && pip install --no-cache-dir --force-reinstall opencv-python-headless==4.10.0.84
 
-COPY app /app/app
+COPY . /app
 EXPOSE 8000
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
