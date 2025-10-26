@@ -22,11 +22,11 @@ RUN apt-get update \
     && ldconfig \
     && ldconfig -p | grep -q "libGL.so.1"
 
-COPY requirements.txt constraints.txt /app/
+COPY requirements.txt constraints.txt ./
 RUN pip install --no-cache-dir --default-timeout=${PIP_DEFAULT_TIMEOUT} -r requirements.txt -c constraints.txt \
     && pip uninstall -y opencv-python || true \
     && pip install --no-cache-dir --force-reinstall opencv-python-headless==4.10.0.84
 
-COPY app /app/app
+COPY . ./backend
 EXPOSE 8000
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
