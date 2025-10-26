@@ -17,12 +17,12 @@ from backend.services.notifications import EventBroadcaster
 
 
 def _setup_cors(app: FastAPI) -> None:
-    allow_origins = settings.cors_allow_origins
+    allow_origins = settings.cors_allow_origin_list
     origin_regex = settings.frontend_origin_regex or r"https?://.*"
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=sorted(allow_origins),
+        allow_origins=allow_origins,
         allow_origin_regex=origin_regex,
         allow_credentials=True,
         allow_methods=["*"],

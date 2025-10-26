@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-from typing import List, Tuple
 
 from fastapi import FastAPI
 
@@ -21,17 +20,7 @@ app.include_router(stats.router)
 
 
 async def _init_default_cameras(session_factory: SessionFactory) -> None:
-    sources = settings.rtsp_sources
-    if not sources.strip():
-        return
-    entries: List[Tuple[str, str]] = []
-    for item in sources.split(","):
-        if "|" in item:
-            name, url = item.split("|", 1)
-        else:
-            name, url = f"cam_{hash(item)%10000}", item
-        entries.append((name.strip(), url.strip()))
-
+    entries = settings.iter_rtsp_sources()
     if not entries:
         return
 
