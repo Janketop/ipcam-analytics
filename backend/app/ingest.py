@@ -85,7 +85,8 @@ class IngestWorker(Thread):
         self.main_loop = main_loop
         self.stop_flag = False
 
-        self.visualize = env_flag("VISUALIZE", False)
+        # По умолчанию оставляем визуализацию включённой, чтобы веб-поток MJPEG не пустел.
+        self.visualize = env_flag("VISUALIZE", True)
         self.last_visual_jpeg = None
 
         det_weights = os.getenv("YOLO_DET_MODEL", "yolov8n.pt")
@@ -285,10 +286,11 @@ class IngestWorker(Thread):
                         # TODO: логика NOT_WORKING по окну времени
                         pass
 
-                # Обновляем live-кадр
-                if self.visualize and vis is not None:
+                # Обновляем live-кадр: если визуализация выключена, передаём «сырое» изображение
+                frame_for_stream = vis if (self.visualize and vis is not None) else frame
+                if frame_for_stream is not None:
                     try:
-                        ret, buf = cv2.imencode('.jpg', vis, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                        ret, buf = cv2.imencode('.jpg', frame_for_stream, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
                         if ret:
                             self.last_visual_jpeg = buf.tobytes()
                     except Exception:
