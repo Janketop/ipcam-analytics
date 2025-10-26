@@ -5,20 +5,31 @@ import time
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
-from sqlalchemy import text
+from sqlalchemy.orm import Session
 
-from backend.core.dependencies import get_engine, get_ingest_manager
+from backend.core.dependencies import get_ingest_manager, get_session
+from backend.models import Camera
 
 router = APIRouter()
 
 
 @router.get("/cameras")
-def list_cameras(engine=Depends(get_engine)):
-    with engine.connect() as con:
-        rows = (
-            con.execute(text("SELECT id, name FROM cameras WHERE active=true ORDER BY id")).mappings().all()
-        )
-        return {"cameras": list(rows)}
+def list_cameras(session: Session = Depends(get_session)):
+    cameras = (
+        session.query(Camera)
+        .filter(Camera.active.is_(True))
+        .order_by(Camera.id)
+        .all()
+    )
+    return {
+        "cameras": [
+            {
+                "id": camera.id,
+                "name": camera.name,
+            }
+            for camera in cameras
+        ]
+    }
 
 
 @router.get("/stream/{camera_name}")
