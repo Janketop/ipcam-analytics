@@ -1,7 +1,6 @@
 """Модуль с настройкой подключения к базе данных и фабрикой сессий."""
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 from typing import Callable
 
@@ -9,20 +8,15 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from backend.core.config import settings
+
 SessionFactory = Callable[[], Session]
 
 
 def _make_engine() -> Engine:
     """Создаёт подключение к PostgreSQL с учётом переменных окружения."""
 
-    user = os.getenv("POSTGRES_USER", "ipcam")
-    pwd = os.getenv("POSTGRES_PASSWORD", "ipcam")
-    db = os.getenv("POSTGRES_DB", "ipcam")
-    host = os.getenv("POSTGRES_HOST", "db")
-    port = os.getenv("POSTGRES_PORT", "5432")
-
-    url = f"postgresql+psycopg2://{user}:{pwd}@{host}:{port}/{db}"
-    return create_engine(url, pool_pre_ping=True, future=True)
+    return create_engine(settings.postgres_dsn, pool_pre_ping=True, future=True)
 
 
 @lru_cache(maxsize=1)
