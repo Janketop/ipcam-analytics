@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Set, Tuple
+from typing import Optional, Set, Tuple
 
 from fastapi import FastAPI
 from sqlalchemy import select
@@ -24,6 +24,7 @@ async def perform_cleanup(
             cleanup_expired_events_and_snapshots,
             session_factory,
             retention_days,
+            started_at,
         )
         state.update(
             {
@@ -61,9 +62,13 @@ async def cleanup_loop(app: FastAPI, interval_hours: float) -> None:
 
 
 def cleanup_expired_events_and_snapshots(
-    session_factory: SessionFactory, retention_days: int
+    session_factory: SessionFactory,
+    retention_days: int,
+    started_at: Optional[datetime] = None,
 ) -> Tuple[int, int, datetime]:
     cutoff_dt = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    if started_at is None:
+        started_at = datetime.now(timezone.utc)
 
     with session_factory() as session:
         deleted_events = (
@@ -87,13 +92,16 @@ def cleanup_expired_events_and_snapshots(
             continue
 
         file_should_be_removed = False
+        try:
+            created_at = datetime.fromtimestamp(file_path.stat().st_mtime, timezone.utc)
+        except OSError:
+            created_at = None
+
         if file_path.name not in snapshot_names:
+            if created_at is not None and created_at >= started_at:
+                continue
             file_should_be_removed = True
         else:
-            try:
-                created_at = datetime.fromtimestamp(file_path.stat().st_mtime, timezone.utc)
-            except OSError:
-                created_at = None
             if created_at is None or created_at < cutoff_dt:
                 file_should_be_removed = True
 
