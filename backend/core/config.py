@@ -102,22 +102,58 @@ class Settings(BaseSettings):
         return origins
 
     def iter_rtsp_sources(self) -> List[Tuple[str, str]]:
-        """Парсит RTSP-строки вида 'name|url' в список (name, url)."""
+        """Парсит RTSP-строки вида 'name|url' в список (name, url).
+
+        Если имя не указано, генерируется стабильное имя вида ``cam1``,
+        ``cam2`` и т.д., чтобы оно не менялось между перезапусками сервиса.
+        Также исключаются пустые элементы и дублирование случайных пробелов.
+        """
 
         if not self.rtsp_sources.strip():
             return []
 
         entries: List[Tuple[str, str]] = []
+        used_names: Set[str] = set()
+        auto_index = 1
+
+        def next_auto_name() -> str:
+            nonlocal auto_index
+            while True:
+                candidate = f"cam{auto_index}"
+                auto_index += 1
+                if candidate not in used_names:
+                    return candidate
+
         for item in self.rtsp_sources.split(","):
             chunk = item.strip()
             if not chunk:
                 continue
+            name: Optional[str]
+            url: str
             if "|" in chunk:
-                name, url = chunk.split("|", 1)
+                name_part, url_part = chunk.split("|", 1)
+                name = name_part.strip() or None
+                url = url_part.strip()
             else:
-                name = f"cam_{abs(hash(chunk)) % 10000}"
+                name = None
                 url = chunk
-            entries.append((name.strip(), url.strip()))
+
+            if not url:
+                continue
+
+            if name is None:
+                name = next_auto_name()
+            else:
+                # Если имя уже занято, аккуратно добавляем суффикс.
+                original = name
+                suffix = 2
+                while name in used_names:
+                    name = f"{original}_{suffix}"
+                    suffix += 1
+
+            used_names.add(name)
+            entries.append((name, url))
+
         return entries
 
 
