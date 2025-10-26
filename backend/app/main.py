@@ -69,6 +69,8 @@ async def startup_event():
                         {"n": name, "u": url},
                     )
     # Запускаем воркеры
+    main_loop = asyncio.get_running_loop()
+    ingest.set_main_loop(main_loop)
     await ingest.start_all()
 
 @app.get("/health")
