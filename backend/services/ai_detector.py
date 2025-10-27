@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -18,6 +18,9 @@ except Exception:  # pragma: no cover - torch may отсутствовать в 
 from backend.core.config import settings
 from backend.core.logger import logger
 from backend.services.snapshots import load_face_cascade, prepare_snapshot
+
+if TYPE_CHECKING:
+    from backend.services.employee_recognizer import EmployeeRecognizer
 
 PHONE_CLASS = "cell phone"
 
@@ -111,6 +114,7 @@ class AIDetector:
         self.face_cascade = load_face_cascade() if face_blur else None
         self.phone_idx: Optional[int] = None
         self.last_car_event_time = 0.0
+        self.employee_recognizer: Optional["EmployeeRecognizer"] = None
 
     def update_flags(
         self,
@@ -125,6 +129,13 @@ class AIDetector:
             self.detect_car = bool(detect_car)
         if capture_entry_time is not None:
             self.capture_entry_time = bool(capture_entry_time)
+
+    def set_employee_recognizer(
+        self, recognizer: Optional["EmployeeRecognizer"]
+    ) -> None:
+        """Передаёт сервис распознавания сотрудников."""
+
+        self.employee_recognizer = recognizer
 
     def runtime_status(self) -> dict:
         preferred = (self.device_preference or "auto").strip() or "auto"
@@ -427,7 +438,14 @@ class AIDetector:
                 id_iter,
             )
 
+        recognizer = self.employee_recognizer
+
         for kpts, bbox, kconf, box_id in people_iter:
+            bbox_arr = np.asarray(bbox, dtype=np.float32).reshape(-1)
+            if bbox_arr.size < 4:
+                padded = np.zeros(4, dtype=np.float32)
+                padded[: bbox_arr.size] = bbox_arr
+                bbox_arr = padded
             try:
                 le = kpts[1]
                 re = kpts[2]
@@ -435,7 +453,18 @@ class AIDetector:
             except Exception:
                 head_tilt = 0.0
 
-            bbox_h = max(1.0, float(bbox[3] - bbox[1]))
+            bbox_h = max(1.0, float(bbox_arr[3] - bbox_arr[1]))
+
+            employee_name = None
+            if recognizer is not None:
+                try:
+                    employee_name = recognizer.identify(frame, bbox_arr[:4].tolist())
+                except Exception:
+                    logger.exception(
+                        "[%s] Ошибка при распознавании сотрудника",
+                        self.camera_name,
+                    )
+                    employee_name = None
 
             def point_valid(idx, conf_threshold=0.2):
                 if idx >= len(kpts):
@@ -494,9 +523,18 @@ class AIDetector:
                         cv2.line(vis, (cx, cy), tuple(map(int, head_center)), (200, 50, 200), 1)
 
             if need_overlay and vis is not None:
-                x1, y1, x2, y2 = map(int, bbox)
+                x1, y1, x2, y2 = map(int, bbox_arr[:4])
                 cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(vis, "PERSON", (x1, y1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                label = employee_name if employee_name else "PERSON"
+                cv2.putText(
+                    vis,
+                    label,
+                    (x1, max(20, y1 - 6)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 0),
+                    2,
+                )
                 pairs = [(5, 7), (7, 9), (6, 8), (8, 10), (5, 6), (11, 12), (11, 13), (13, 15), (12, 14), (14, 16)]
                 for (i, j) in pairs:
                     if i < len(kpts) and j < len(kpts):
@@ -539,6 +577,8 @@ class AIDetector:
                     "id": person_id,
                     "keypoints": kpts.copy(),
                     "confidence": mean_conf,
+                    "bbox": bbox_arr[:4].tolist(),
+                    "employee_name": employee_name,
                 }
             )
 
