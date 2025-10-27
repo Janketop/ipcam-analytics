@@ -12,6 +12,7 @@ import cv2
 
 from backend.core.config import settings
 from backend.core.database import SessionFactory
+from backend.core.logger import logger
 from backend.models import Event
 
 from backend.services.ai_detector import AIDetector
@@ -66,19 +67,30 @@ class IngestWorker(Thread):
         fps_skip = settings.ingest_fps_skip
         flush_timeout = settings.ingest_flush_timeout
 
+        logger.info("[%s] Ingest-воркер запущен", self.name)
         while not self.stop_flag:
             cap = cv2.VideoCapture(self.url)
             try:
                 if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Не удалось установить размер буфера видеопотока: %s",
+                    self.name,
+                    exc,
+                    exc_info=True,
+                )
             if not cap.isOpened():
-                print(f"[{self.name}] не удалось открыть поток, повтор через {reconnect_delay} с")
+                logger.warning(
+                    "[%s] Не удалось открыть поток, повторное подключение через %.1f с",
+                    self.name,
+                    reconnect_delay,
+                )
                 cap.release()
                 time.sleep(reconnect_delay)
                 continue
 
+            logger.info("[%s] Ingest-воркер успешно подключился к потоку", self.name)
             frame_id = 0
             failed_reads = 0
             reconnect_needed = False
@@ -89,7 +101,11 @@ class IngestWorker(Thread):
                     failed_reads += 1
                     if failed_reads >= max_failed_reads:
                         reconnect_needed = True
-                        print(f"[{self.name}] потеряно соединение, переподключаюсь через {reconnect_delay} с")
+                        logger.warning(
+                            "[%s] Потеряно соединение, повторное подключение через %.1f с",
+                            self.name,
+                            reconnect_delay,
+                        )
                         break
                     time.sleep(0.2)
                     continue
@@ -107,7 +123,11 @@ class IngestWorker(Thread):
                         failed_reads += 1
                         if failed_reads >= max_failed_reads:
                             reconnect_needed = True
-                            print(f"[{self.name}] потеряно соединение, переподключаюсь через {reconnect_delay} с")
+                            logger.warning(
+                                "[%s] Потеряно соединение при чтении буфера, повторное подключение через %.1f с",
+                                self.name,
+                                reconnect_delay,
+                            )
                             break
                         time.sleep(0.2)
                         break
@@ -121,7 +141,11 @@ class IngestWorker(Thread):
                         failed_reads += 1
                         if failed_reads >= max_failed_reads:
                             reconnect_needed = True
-                            print(f"[{self.name}] потеряно соединение, переподключаюсь через {reconnect_delay} с")
+                            logger.warning(
+                                "[%s] Потеряно соединение при получении кадра, повторное подключение через %.1f с",
+                                self.name,
+                                reconnect_delay,
+                            )
                             break
                         time.sleep(0.2)
                         continue
@@ -147,7 +171,7 @@ class IngestWorker(Thread):
                         if ret:
                             self.last_visual_jpeg = buf.tobytes()
                     except Exception:
-                        pass
+                        logger.exception("[%s] Не удалось сформировать визуализацию кадра", self.name)
 
                 if ev_type:
                     events_to_store.append(
@@ -214,6 +238,13 @@ class IngestWorker(Thread):
                 else:
                     persisted_events = []
                 for stored in persisted_events:
+                    logger.info(
+                        "[%s] Зафиксировано событие %s (уверенность %.2f, данные %s)",
+                        self.name,
+                        stored["type"],
+                        stored["confidence"],
+                        stored["meta"],
+                    )
                     if self.broadcaster and self.main_loop and not self.main_loop.is_closed():
                         try:
                             future = asyncio.run_coroutine_threadsafe(
@@ -233,21 +264,39 @@ class IngestWorker(Thread):
                             def _finalize(fut):
                                 try:
                                     fut.result()
-                                except (asyncio.CancelledError, RuntimeError):
-                                    pass
+                                except (asyncio.CancelledError, RuntimeError) as exc:
+                                    logger.warning(
+                                        "[%s] Рассылка события была прервана: %s",
+                                        self.name,
+                                        exc,
+                                    )
                                 except Exception:
-                                    pass
+                                    logger.exception(
+                                        "[%s] Ошибка при завершении рассылки события",
+                                        self.name,
+                                    )
 
                             future.add_done_callback(_finalize)
-                        except (RuntimeError, ValueError):
-                            pass
+                        except (RuntimeError, ValueError) as exc:
+                            logger.warning(
+                                "[%s] Не удалось отправить событие подписчикам: %s",
+                                self.name,
+                                exc,
+                            )
 
             cap.release()
             if self.stop_flag:
                 break
 
             if reconnect_needed:
+                logger.info(
+                    "[%s] Переподключение к потоку после паузы %.1f с",
+                    self.name,
+                    reconnect_delay,
+                )
                 time.sleep(reconnect_delay)
+
+        logger.info("[%s] Ingest-воркер остановлен", self.name)
 
     def get_visual_frame_jpeg(self):
         return self.last_visual_jpeg
