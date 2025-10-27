@@ -24,6 +24,9 @@ const DashboardPage = () => {
   const [stats, setStats] = useState<Stat[]>([]);
   const [viewMode, setViewMode] = useState<'live' | 'sim'>('live');
   const [simEvents, setSimEvents] = useState<SimEvent[]>([]);
+  const [isTraining, setIsTraining] = useState(false);
+  const [trainError, setTrainError] = useState<string | null>(null);
+  const [trainSuccess, setTrainSuccess] = useState<string | null>(null);
 
   useEffect(() => {
     const loadStats = async () => {
@@ -42,6 +45,33 @@ const DashboardPage = () => {
   const handleSimEvent = useCallback((event: SimEvent) => {
     setSimEvents(prev => [event, ...prev].slice(0, 15));
   }, []);
+
+  const handleSelfTraining = useCallback(async () => {
+    setTrainError(null);
+    setTrainSuccess(null);
+    setIsTraining(true);
+    try {
+      const response = await fetch(`${normalizedApiBase}/train/self`, { method: 'POST' });
+      if (!response.ok) {
+        let detail = response.statusText;
+        try {
+          const data = await response.json();
+          if (data?.detail) {
+            detail = data.detail;
+          }
+        } catch (err) {
+          console.warn('Не удалось разобрать ответ API при запуске обучения', err);
+        }
+        throw new Error(detail || 'Не удалось запустить самообучение');
+      }
+      setTrainSuccess('Обучение модели запущено. Это может занять несколько минут.');
+    } catch (err) {
+      console.error('Ошибка запуска самообучения модели', err);
+      setTrainError(err instanceof Error ? err.message : 'Не удалось запустить самообучение');
+    } finally {
+      setIsTraining(false);
+    }
+  }, [normalizedApiBase]);
 
   useEffect(() => {
     if (viewMode !== 'sim') {
@@ -105,6 +135,34 @@ const DashboardPage = () => {
           <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
             <h3 style={{ margin: '0 0 4px' }}>Статус вычислений</h3>
             <RuntimeStatus runtime={runtime} error={runtimeError} />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <button
+                onClick={handleSelfTraining}
+                disabled={isTraining}
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: 6,
+                  border: 'none',
+                  backgroundColor: isTraining ? '#94a3b8' : '#2563eb',
+                  color: '#fff',
+                  cursor: isTraining ? 'not-allowed' : 'pointer',
+                  fontWeight: 600,
+                }}
+              >
+                {isTraining ? 'Запуск...' : 'Обновить модель'}
+              </button>
+              {isTraining && (
+                <span style={{ fontSize: 12, color: '#475569' }}>
+                  Обучение запущено, дождитесь завершения процесса.
+                </span>
+              )}
+              {trainSuccess && !isTraining && (
+                <span style={{ fontSize: 12, color: '#16a34a' }}>{trainSuccess}</span>
+              )}
+              {trainError && !isTraining && (
+                <span style={{ fontSize: 12, color: '#dc2626' }}>{trainError}</span>
+              )}
+            </div>
           </div>
 
           {viewMode === 'live' ? (

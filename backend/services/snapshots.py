@@ -5,11 +5,12 @@ from datetime import datetime
 from typing import Optional
 from uuid import uuid4
 import os
+import shutil
 
 import cv2
 
 from backend.core.logger import logger
-from backend.core.paths import SNAPSHOT_DIR
+from backend.core.paths import DATASET_PHONE_USAGE_DIR, SNAPSHOT_DIR
 
 
 def load_face_cascade() -> Optional[cv2.CascadeClassifier]:
@@ -51,6 +52,12 @@ def save_snapshot(img_bgr, ts: datetime, camera_name: str, event_type: str = "ev
     success = cv2.imwrite(str(path), img_bgr)
     if success:
         logger.info("Снимок сохранён: %s", path)
+        dataset_path = DATASET_PHONE_USAGE_DIR / filename
+        try:
+            shutil.copy2(path, dataset_path)
+            logger.debug("Снимок продублирован в датасет: %s", dataset_path)
+        except Exception as exc:
+            logger.warning("Не удалось скопировать снимок %s в датасет: %s", filename, exc)
     else:
         logger.warning("Не удалось сохранить снимок %s", path)
     return f"/static/snaps/{filename}"
