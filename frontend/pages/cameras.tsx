@@ -2,6 +2,7 @@ import { FormEvent, useCallback, useState } from 'react';
 import Layout from '../components/Layout';
 import { useApiBase } from '../hooks/useApiBase';
 import { useCameras } from '../hooks/useCameras';
+import type { CameraStatus } from '../types/api';
 
 const CamerasPage = () => {
   const { normalizedApiBase } = useApiBase();
@@ -71,7 +72,17 @@ const CamerasPage = () => {
       }
 
       setCameras(prev => {
-        const next = [...prev, { id: created.id as number, name: String(created.name) }];
+        const next = [
+          ...prev,
+          {
+            id: Number(created.id),
+            name: String(created.name),
+            status: 'starting' as CameraStatus,
+            fps: null,
+            lastFrameTs: null,
+            uptimeSec: null,
+          },
+        ];
         return next.sort((a, b) => a.id - b.id);
       });
       setNewCameraName('');
@@ -126,6 +137,107 @@ const CamerasPage = () => {
       setRemovingCameraId(null);
     }
   }, [normalizedApiBase, setCameras]);
+
+  const formatFps = (fps?: number | null) => {
+    if (typeof fps !== 'number' || !Number.isFinite(fps)) {
+      return '—';
+    }
+    if (fps >= 10) {
+      return fps.toFixed(0);
+    }
+    return fps.toFixed(1);
+  };
+
+  const formatLastFrame = (timestamp?: string | null) => {
+    if (!timestamp) {
+      return '—';
+    }
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) {
+      return '—';
+    }
+
+    const now = Date.now();
+    const diffSec = Math.max(0, Math.round((now - date.getTime()) / 1000));
+    let relative: string;
+    if (diffSec < 5) {
+      relative = 'только что';
+    } else if (diffSec < 60) {
+      relative = `${diffSec} с назад`;
+    } else if (diffSec < 3600) {
+      relative = `${Math.floor(diffSec / 60)} мин назад`;
+    } else if (diffSec < 86400) {
+      relative = `${Math.floor(diffSec / 3600)} ч назад`;
+    } else {
+      relative = `${Math.floor(diffSec / 86400)} дн назад`;
+    }
+
+    return `${date.toLocaleString('ru-RU', { hour12: false })}\n${relative}`;
+  };
+
+  const formatUptime = (seconds?: number | null) => {
+    if (typeof seconds !== 'number' || !Number.isFinite(seconds)) {
+      return '—';
+    }
+
+    const total = Math.max(0, Math.floor(seconds));
+    const days = Math.floor(total / 86400);
+    const hours = Math.floor((total % 86400) / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const parts: string[] = [];
+    if (days) parts.push(`${days} д`);
+    if (hours) parts.push(`${hours} ч`);
+    if (minutes) parts.push(`${minutes} мин`);
+    if (!parts.length) {
+      parts.push(`${total % 60} с`);
+    }
+    return parts.join(' ');
+  };
+
+  const statusLabels: Record<CameraStatus, string> = {
+    online: 'В работе',
+    offline: 'Отключена',
+    starting: 'Запускается',
+    stopping: 'Останавливается',
+    no_signal: 'Нет сигнала',
+    unknown: 'Неизвестно',
+  };
+
+  const statusPalette: Record<CameraStatus, { background: string; color: string; border: string }> = {
+    online: { background: '#dcfce7', color: '#166534', border: '#86efac' },
+    offline: { background: '#f1f5f9', color: '#475569', border: '#cbd5f5' },
+    starting: { background: '#e0f2fe', color: '#0c4a6e', border: '#7dd3fc' },
+    stopping: { background: '#fef9c3', color: '#854d0e', border: '#fde68a' },
+    no_signal: { background: '#fee2e2', color: '#b91c1c', border: '#fecaca' },
+    unknown: { background: '#f8fafc', color: '#475569', border: '#cbd5f5' },
+  };
+
+  const renderStatusBadge = (status?: CameraStatus) => {
+    const key: CameraStatus = status ?? 'unknown';
+    const palette = statusPalette[key] ?? statusPalette.unknown;
+    const label = statusLabels[key] ?? statusLabels.unknown;
+    return (
+      <span
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '4px 8px',
+          borderRadius: 999,
+          border: `1px solid ${palette.border}`,
+          background: palette.background,
+          color: palette.color,
+          fontWeight: 600,
+          fontSize: 13,
+          minWidth: 110,
+          textAlign: 'center',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {label}
+      </span>
+    );
+  };
 
   return (
     <Layout title="IP-CAM Analytics — Камеры">
@@ -293,41 +405,135 @@ const CamerasPage = () => {
             Пока нет активных камер. Добавьте поток, чтобы начать обработку.
           </p>
         ) : (
-          <ul style={{ listStyle: 'none', margin: '16px 0 0', padding: 0, display: 'grid', gap: 10 }}>
-            {cameras.map(camera => (
-              <li
-                key={camera.id}
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  gap: 12,
-                  padding: '10px 12px',
-                  borderRadius: 10,
-                  border: '1px solid #e2e8f0',
-                  background: '#f8fafc',
-                }}
-              >
-                <span style={{ fontWeight: 600, color: '#0f172a' }}>{camera.name}</span>
-                <button
-                  type="button"
-                  onClick={() => handleDeleteCamera(camera.id, camera.name)}
-                  disabled={removingCameraId === camera.id}
-                  style={{
-                    padding: '6px 12px',
-                    borderRadius: 6,
-                    border: '1px solid #fca5a5',
-                    background: removingCameraId === camera.id ? '#fecaca' : '#fee2e2',
-                    color: '#b91c1c',
-                    cursor: removingCameraId === camera.id ? 'wait' : 'pointer',
-                    fontWeight: 600,
-                  }}
-                >
-                  {removingCameraId === camera.id ? 'Удаляем…' : 'Удалить'}
-                </button>
-              </li>
-            ))}
-          </ul>
+          <div style={{ marginTop: 16, overflowX: 'auto' }}>
+            <table
+              style={{
+                width: '100%',
+                borderCollapse: 'separate',
+                borderSpacing: 0,
+                minWidth: 720,
+              }}
+            >
+              <thead>
+                <tr style={{ background: '#f8fafc' }}>
+                  <th
+                    style={{
+                      padding: '12px 16px',
+                      textAlign: 'left',
+                      fontSize: 13,
+                      fontWeight: 700,
+                      color: '#0f172a',
+                      borderBottom: '1px solid #e2e8f0',
+                    }}
+                  >
+                    Камера
+                  </th>
+                  <th
+                    style={{
+                      padding: '12px 16px',
+                      textAlign: 'center',
+                      fontSize: 13,
+                      fontWeight: 700,
+                      color: '#0f172a',
+                      borderBottom: '1px solid #e2e8f0',
+                    }}
+                  >
+                    FPS
+                  </th>
+                  <th
+                    style={{
+                      padding: '12px 16px',
+                      textAlign: 'left',
+                      fontSize: 13,
+                      fontWeight: 700,
+                      color: '#0f172a',
+                      borderBottom: '1px solid #e2e8f0',
+                    }}
+                  >
+                    Последний кадр
+                  </th>
+                  <th
+                    style={{
+                      padding: '12px 16px',
+                      textAlign: 'center',
+                      fontSize: 13,
+                      fontWeight: 700,
+                      color: '#0f172a',
+                      borderBottom: '1px solid #e2e8f0',
+                    }}
+                  >
+                    Аптайм
+                  </th>
+                  <th
+                    style={{
+                      padding: '12px 16px',
+                      textAlign: 'center',
+                      fontSize: 13,
+                      fontWeight: 700,
+                      color: '#0f172a',
+                      borderBottom: '1px solid #e2e8f0',
+                    }}
+                  >
+                    Состояние
+                  </th>
+                  <th
+                    style={{
+                      padding: '12px 16px',
+                      textAlign: 'right',
+                      fontSize: 13,
+                      fontWeight: 700,
+                      color: '#0f172a',
+                      borderBottom: '1px solid #e2e8f0',
+                    }}
+                  >
+                    Действия
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {cameras.map(camera => {
+                  const isRemoving = removingCameraId === camera.id;
+                  return (
+                    <tr key={camera.id} style={{ borderBottom: '1px solid #e2e8f0' }}>
+                      <td style={{ padding: '14px 16px', verticalAlign: 'middle' }}>
+                        <div style={{ fontWeight: 600, color: '#0f172a' }}>{camera.name}</div>
+                        <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>ID: {camera.id}</div>
+                      </td>
+                      <td style={{ padding: '14px 16px', textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>
+                        {formatFps(camera.fps)}
+                      </td>
+                      <td style={{ padding: '14px 16px', whiteSpace: 'pre-line', fontSize: 13, color: '#334155' }}>
+                        {formatLastFrame(camera.lastFrameTs)}
+                      </td>
+                      <td style={{ padding: '14px 16px', textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>
+                        {formatUptime(camera.uptimeSec)}
+                      </td>
+                      <td style={{ padding: '14px 16px', textAlign: 'center' }}>{renderStatusBadge(camera.status)}</td>
+                      <td style={{ padding: '14px 16px', textAlign: 'right' }}>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteCamera(camera.id, camera.name)}
+                          disabled={isRemoving}
+                          style={{
+                            padding: '6px 12px',
+                            borderRadius: 6,
+                            border: '1px solid #fca5a5',
+                            background: isRemoving ? '#fecaca' : '#fee2e2',
+                            color: '#b91c1c',
+                            cursor: isRemoving ? 'wait' : 'pointer',
+                            fontWeight: 600,
+                            minWidth: 100,
+                          }}
+                        >
+                          {isRemoving ? 'Удаляем…' : 'Удалить'}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
     </Layout>
