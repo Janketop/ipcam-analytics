@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from sqlalchemy import select
 
 from backend.core.database import SessionFactory
+from backend.core.logger import logger
 from backend.models import Event
 from backend.core.paths import SNAPSHOT_DIR
 
@@ -20,6 +21,7 @@ async def perform_cleanup(
 ) -> None:
     """Запускает очистку в отдельном потоке и обновляет state."""
     started_at = datetime.now(timezone.utc)
+    logger.info("Очистка: старт (retention=%d дней)", retention_days)
     try:
         deleted_events, deleted_snapshots, cutoff_dt = await asyncio.to_thread(
             cleanup_expired_events_and_snapshots,
@@ -36,6 +38,12 @@ async def perform_cleanup(
                 "cutoff": cutoff_dt,
             }
         )
+        logger.info(
+            "Очистка завершена: удалено %d событий и %d снимков (граница %s)",
+            deleted_events,
+            deleted_snapshots,
+            cutoff_dt.isoformat(),
+        )
     except Exception as exc:
         state.update(
             {
@@ -44,6 +52,7 @@ async def perform_cleanup(
                 "cutoff": None,
             }
         )
+        logger.exception("Очистка завершилась с ошибкой")
 
 
 async def cleanup_loop(app: FastAPI, interval_hours: float) -> None:
@@ -55,10 +64,12 @@ async def cleanup_loop(app: FastAPI, interval_hours: float) -> None:
     interval_seconds = interval_hours * 3600
     while True:
         async with lock:
+            logger.info("Фоновая очистка: запуск цикла")
             await perform_cleanup(session_factory, retention_days, cleanup_state)
         try:
             await asyncio.sleep(interval_seconds)
         except asyncio.CancelledError:
+            logger.warning("Фоновая очистка остановлена по CancelledError")
             break
 
 
@@ -105,7 +116,12 @@ def cleanup_expired_events_and_snapshots(
         file_should_be_removed = False
         try:
             created_at = datetime.fromtimestamp(file_path.stat().st_mtime, timezone.utc)
-        except OSError:
+        except OSError as exc:
+            logger.warning(
+                "Не удалось получить время создания файла %s: %s",
+                file_path,
+                exc,
+            )
             created_at = None
 
         if file_path.name not in snapshot_names:
@@ -120,9 +136,19 @@ def cleanup_expired_events_and_snapshots(
             try:
                 file_path.unlink()
                 deleted_snapshots += 1
-            except FileNotFoundError:
+            except FileNotFoundError as exc:
+                logger.warning(
+                    "Не удалось удалить файл %s: файл уже удалён (%s)",
+                    file_path,
+                    exc,
+                )
                 continue
-            except OSError:
+            except OSError as exc:
+                logger.warning(
+                    "Ошибка при удалении файла %s: %s",
+                    file_path,
+                    exc,
+                )
                 continue
 
     missing_snapshot_event_ids = [
@@ -140,5 +166,9 @@ def cleanup_expired_events_and_snapshots(
                 .update({Event.snapshot_url: None}, synchronize_session=False)
             )
             session.commit()
+        logger.warning(
+            "Обнаружено %d событий без файлов снимков, ссылки обнулены",
+            len(missing_snapshot_event_ids),
+        )
 
     return deleted_events, deleted_snapshots, cutoff_dt

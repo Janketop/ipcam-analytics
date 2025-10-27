@@ -8,6 +8,7 @@ import os
 
 import cv2
 
+from backend.core.logger import logger
 from backend.core.paths import SNAPSHOT_DIR
 
 
@@ -17,7 +18,8 @@ def load_face_cascade() -> Optional[cv2.CascadeClassifier]:
         cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         if cascade_path and os.path.exists(cascade_path):
             return cv2.CascadeClassifier(cascade_path)
-    except Exception:
+    except Exception as exc:
+        logger.exception("Не удалось загрузить каскад Хаара: %s", exc)
         return None
     return None
 
@@ -36,7 +38,7 @@ def prepare_snapshot(img_bgr, face_blur: bool, face_cascade: Optional[cv2.Cascad
                 roi = cv2.GaussianBlur(roi, (99, 99), 30)
                 snap[y : y + h, x : x + w] = roi
         except Exception:
-            pass
+            logger.exception("Ошибка при размытии лиц на снимке")
     return snap
 
 
@@ -46,5 +48,9 @@ def save_snapshot(img_bgr, ts: datetime, camera_name: str, event_type: str = "ev
         return ""
     filename = f"{camera_name}_{event_type}_{int(ts.timestamp())}_{uuid4().hex[:6]}.jpg"
     path = SNAPSHOT_DIR / filename
-    cv2.imwrite(str(path), img_bgr)
+    success = cv2.imwrite(str(path), img_bgr)
+    if success:
+        logger.info("Снимок сохранён: %s", path)
+    else:
+        logger.warning("Не удалось сохранить снимок %s", path)
     return f"/static/snaps/{filename}"
