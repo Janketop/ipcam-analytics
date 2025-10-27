@@ -9,6 +9,7 @@ from sqlalchemy.exc import NoSuchTableError
 
 from backend.core.logger import logger
 from backend.core.database import SessionFactory
+from backend.core.config import settings
 
 
 def _add_missing_camera_flags(columns: set[str]) -> Iterable[str]:
@@ -21,6 +22,13 @@ def _add_missing_camera_flags(columns: set[str]) -> Iterable[str]:
     for column in ("detect_person", "detect_car", "capture_entry_time"):
         if column not in columns:
             yield alter_template.format(column=column)
+
+    if "idle_alert_time" not in columns:
+        default_value = int(settings.idle_alert_time)
+        yield (
+            "ALTER TABLE cameras ADD COLUMN idle_alert_time INTEGER NOT NULL "
+            f"DEFAULT {default_value}"
+        )
 
 
 def run_startup_migrations(session_factory: SessionFactory) -> None:
@@ -49,7 +57,7 @@ def run_startup_migrations(session_factory: SessionFactory) -> None:
 
         logger.info(
             "Добавлены отсутствующие флаги камер: %s",
-            ", ".join(stmt.split()[4] for stmt in statements),
+            ", ".join(stmt.split()[5] for stmt in statements),
         )
 
 
