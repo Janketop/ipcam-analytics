@@ -43,6 +43,69 @@ const formatEntryTime = (meta?: EventMeta, fallback?: string) => {
   return new Date(ts).toLocaleString();
 };
 
+const normalizeNumber = (value: unknown): number | undefined => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number.parseFloat(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return undefined;
+};
+
+const formatPoseConfidence = (meta?: EventMeta) => {
+  const raw =
+    normalizeNumber(meta?.pose_confidence) ?? normalizeNumber((meta as Record<string, unknown> | undefined)?.poseConfidence);
+  if (raw === undefined) return '—';
+  const clamped = Math.min(Math.max(raw, 0), 1);
+  const percent = Math.round(clamped * 100);
+  return `${percent}%`;
+};
+
+const formatHeadAngle = (meta?: EventMeta) => {
+  const raw =
+    normalizeNumber(meta?.head_angle) ?? normalizeNumber((meta as Record<string, unknown> | undefined)?.headAngle);
+  if (raw === undefined) return '—';
+  const rounded = Math.round(raw * 10) / 10;
+  const sign = rounded > 0 ? '+' : '';
+  return `${sign}${rounded.toFixed(1)}°`;
+};
+
+const formatHandsMotion = (meta?: EventMeta) => {
+  const raw =
+    normalizeNumber(meta?.hands_motion) ?? normalizeNumber((meta as Record<string, unknown> | undefined)?.handMovement);
+  if (raw === undefined) return '—';
+  if (raw === 0) {
+    return '0.000';
+  }
+  if (Math.abs(raw) >= 1) {
+    return raw.toFixed(2);
+  }
+  return raw.toFixed(3);
+};
+
+const formatIdleDuration = (meta?: EventMeta) => {
+  const raw =
+    normalizeNumber(meta?.duration_idle_sec) ?? normalizeNumber((meta as Record<string, unknown> | undefined)?.idleSeconds);
+  if (raw === undefined) return '—';
+  if (raw < 1) return '<1 с';
+  const totalSeconds = Math.floor(raw);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours} ч ${minutes.toString().padStart(2, '0')} мин`;
+  }
+  if (minutes > 0) {
+    return `${minutes} мин ${seconds.toString().padStart(2, '0')} с`;
+  }
+  return `${seconds} с`;
+};
+
 const EventsPage = () => {
   const { apiBase, normalizedApiBase, buildAbsoluteUrl } = useApiBase();
   const [events, setEvents] = useState<EventItem[]>([]);
@@ -119,6 +182,10 @@ const EventsPage = () => {
             <td style={{ padding: 10, borderBottom: '1px solid #e2e8f0' }}>
               {event.confidence !== undefined ? event.confidence.toFixed(2) : '—'}
             </td>
+            <td style={{ padding: 10, borderBottom: '1px solid #e2e8f0' }}>{formatPoseConfidence(event.meta)}</td>
+            <td style={{ padding: 10, borderBottom: '1px solid #e2e8f0' }}>{formatHeadAngle(event.meta)}</td>
+            <td style={{ padding: 10, borderBottom: '1px solid #e2e8f0' }}>{formatHandsMotion(event.meta)}</td>
+            <td style={{ padding: 10, borderBottom: '1px solid #e2e8f0' }}>{formatIdleDuration(event.meta)}</td>
           </tr>
         );
       }),
@@ -161,13 +228,17 @@ const EventsPage = () => {
               <th style={{ padding: 10, textAlign: 'left', borderBottom: '1px solid #e2e8f0' }}>Госномер</th>
               <th style={{ padding: 10, textAlign: 'left', borderBottom: '1px solid #e2e8f0' }}>Время заезда</th>
               <th style={{ padding: 10, textAlign: 'left', borderBottom: '1px solid #e2e8f0' }}>Уверенность</th>
+              <th style={{ padding: 10, textAlign: 'left', borderBottom: '1px solid #e2e8f0' }}>Поза</th>
+              <th style={{ padding: 10, textAlign: 'left', borderBottom: '1px solid #e2e8f0' }}>Наклон головы</th>
+              <th style={{ padding: 10, textAlign: 'left', borderBottom: '1px solid #e2e8f0' }}>Активность рук</th>
+              <th style={{ padding: 10, textAlign: 'left', borderBottom: '1px solid #e2e8f0' }}>Простой</th>
             </tr>
           </thead>
           <tbody>
             {rows}
             {events.length === 0 && (
               <tr>
-                <td colSpan={6} style={{ padding: 16, textAlign: 'center', color: '#64748b' }}>
+                <td colSpan={10} style={{ padding: 16, textAlign: 'center', color: '#64748b' }}>
                   Пока нет зафиксированных событий.
                 </td>
               </tr>
