@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
-from pydantic import AnyUrl, BaseModel, constr, validator
+from pydantic import AnyUrl, BaseModel, Field, constr, validator
 from sqlalchemy.orm import Session
 
 from backend.core.config import settings
@@ -23,6 +23,7 @@ class CameraCreateRequest(BaseModel):
     detect_person: bool = True
     detect_car: bool = True
     capture_entry_time: bool = True
+    idle_alert_time: int = Field(default=settings.idle_alert_time, ge=10, le=86400)
 
     @validator("rtsp_url")
     def ensure_rtsp_scheme(cls, value: AnyUrl) -> AnyUrl:
@@ -39,6 +40,7 @@ class CameraUpdateRequest(BaseModel):
     detect_person: Optional[bool]
     detect_car: Optional[bool]
     capture_entry_time: Optional[bool]
+    idle_alert_time: Optional[int] = Field(default=None, ge=10, le=86400)
 
     @validator("rtsp_url")
     def ensure_rtsp_scheme(cls, value: AnyUrl | None) -> AnyUrl | None:
@@ -106,6 +108,7 @@ def _camera_payload(camera: Camera) -> Dict[str, Any]:
         "detectPerson": camera.detect_person,
         "detectCar": camera.detect_car,
         "captureEntryTime": camera.capture_entry_time,
+        "idleAlertTime": camera.idle_alert_time or settings.idle_alert_time,
     }
 
 
@@ -195,6 +198,7 @@ def add_camera(
         detect_person=payload.detect_person,
         detect_car=payload.detect_car,
         capture_entry_time=payload.capture_entry_time,
+        idle_alert_time=payload.idle_alert_time,
     )
     session.add(camera)
     session.commit()
@@ -228,6 +232,7 @@ def update_camera(
     original_detect_person = camera.detect_person
     original_detect_car = camera.detect_car
     original_capture_entry_time = camera.capture_entry_time
+    original_idle_alert_time = camera.idle_alert_time
 
     new_name = updates.get("name")
     if new_name:
@@ -252,6 +257,9 @@ def update_camera(
         if field in updates and updates[field] is not None:
             setattr(camera, field, bool(updates[field]))
 
+    if "idle_alert_time" in updates and updates["idle_alert_time"] is not None:
+        camera.idle_alert_time = int(updates["idle_alert_time"])
+
     session.add(camera)
     session.commit()
     session.refresh(camera)
@@ -264,6 +272,7 @@ def update_camera(
                 camera.detect_person != original_detect_person,
                 camera.detect_car != original_detect_car,
                 camera.capture_entry_time != original_capture_entry_time,
+                camera.idle_alert_time != original_idle_alert_time,
             ]
         )
 
@@ -278,6 +287,7 @@ def update_camera(
                     detect_person=camera.detect_person,
                     detect_car=camera.detect_car,
                     capture_entry_time=camera.capture_entry_time,
+                    idle_alert_time=camera.idle_alert_time,
                 )
 
     return {"camera": _camera_payload(camera)}

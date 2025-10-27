@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     ingest_flush_timeout: float = Field(0.2, ge=0.0)
     ingest_status_interval: float = Field(5.0, ge=0.5)
     ingest_status_stale_threshold: float = Field(30.0, ge=1.0)
+    idle_alert_time: int = Field(300, ge=10)
 
     face_blur: bool = Field(False)
     visualize: bool = Field(False)
