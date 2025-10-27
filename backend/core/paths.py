@@ -6,6 +6,8 @@ from pathlib import Path
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BACKEND_DIR / "static"
 SNAPSHOT_DIR = STATIC_DIR / "snaps"
+LOG_DIR = BACKEND_DIR / "logs"
 
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
