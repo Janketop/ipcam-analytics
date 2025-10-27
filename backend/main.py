@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from backend.api.routes import cameras, events, health, stats, training
+from backend.api.routes import cameras, events, health, stats, statuses, training
 from backend.core.logger import LOGGING_CONFIG, logger
 from backend.core.app import create_app
 from backend.core.config import settings
@@ -18,6 +18,7 @@ app = create_app()
 app.include_router(health.router)
 app.include_router(cameras.router)
 app.include_router(events.router)
+app.include_router(statuses.router)
 app.include_router(stats.router)
 app.include_router(training.router)
 

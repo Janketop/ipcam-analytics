@@ -16,7 +16,7 @@ from backend.core.database import get_session_factory
 from backend.core.logger import logger
 from backend.core.paths import STATIC_DIR
 from backend.services.ingest_manager import IngestManager
-from backend.services.notifications import EventBroadcaster
+from backend.services.notifications import EventBroadcaster, StatusBroadcaster
 from backend.services.training import SelfTrainingService
 
 
@@ -57,11 +57,14 @@ def create_app() -> FastAPI:
     session_factory = get_session_factory()
     ingest = IngestManager(session_factory)
     broadcaster = EventBroadcaster()
+    status_broadcaster = StatusBroadcaster()
     ingest.set_broadcaster(broadcaster.broadcast)
+    ingest.set_status_broadcaster(status_broadcaster.broadcast)
 
     app.state.session_factory = session_factory
     app.state.ingest_manager = ingest
     app.state.event_broadcaster = broadcaster
+    app.state.status_broadcaster = status_broadcaster
     app.state.cleanup_state = {
         "last_run": None,  # type: Optional[datetime]
         "deleted_events": 0,
