@@ -17,6 +17,7 @@ from backend.core.logger import logger
 from backend.core.paths import STATIC_DIR
 from backend.services.ingest_manager import IngestManager
 from backend.services.notifications import EventBroadcaster
+from backend.services.training import SelfTrainingService
 
 
 def _setup_cors(app: FastAPI) -> None:
@@ -72,6 +73,7 @@ def create_app() -> FastAPI:
     app.state.background_tasks: list[asyncio.Task] = []
     app.state.retention_days = settings.retention_days
     app.state.cleanup_interval_hours = settings.retention_cleanup_interval_hours
+    app.state.self_training_service = SelfTrainingService()
 
     _log_gpu_status()
     logger.info(
