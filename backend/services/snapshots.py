@@ -27,20 +27,10 @@ def load_face_cascade() -> Optional[cv2.CascadeClassifier]:
 
 
 def prepare_snapshot(img_bgr, face_blur: bool, face_cascade: Optional[cv2.CascadeClassifier]):
-    """Копирует кадр и размывает лица, если это разрешено настройками."""
+    """Копирует кадр и возвращает его без размытия лиц."""
     if img_bgr is None:
         return None
     snap = img_bgr.copy()
-    if face_blur and face_cascade is not None:
-        try:
-            gray = cv2.cvtColor(snap, cv2.COLOR_BGR2GRAY)
-            faces = face_cascade.detectMultiScale(gray, 1.3, 5)
-            for (x, y, w, h) in faces:
-                roi = snap[y : y + h, x : x + w]
-                roi = cv2.GaussianBlur(roi, (99, 99), 30)
-                snap[y : y + h, x : x + w] = roi
-        except Exception:
-            logger.exception("Ошибка при размытии лиц на снимке")
     return snap
 
 
