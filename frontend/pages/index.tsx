@@ -72,6 +72,27 @@ const HomePage = () => (
           Добавляйте новые RTSP-потоки, удаляйте устаревшие камеры и держите список устройств в актуальном состоянии.
         </span>
       </Link>
+
+      <Link
+        href="/identification"
+        style={{
+          padding: 20,
+          borderRadius: 12,
+          border: '1px solid #e2e8f0',
+          background: '#fff',
+          boxShadow: '0 8px 16px rgba(15,23,42,0.08)',
+          textDecoration: 'none',
+          color: '#0f172a',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+        }}
+      >
+        <span style={{ fontSize: 20, fontWeight: 700 }}>Определение сотрудников</span>
+        <span style={{ color: '#475569' }}>
+          Собирайте снимки лиц прямо из камер, отмечайте сотрудников и отделяйте клиентов, чтобы подготовить датасет без очных фотосессий.
+        </span>
+      </Link>
     </div>
   </Layout>
 );
