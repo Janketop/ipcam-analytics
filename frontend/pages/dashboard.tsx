@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { CSSProperties } from 'react';
 import Layout from '../components/Layout';
 import LiveStreamViewer from '../components/LiveStreamViewer';
 import RuntimeStatus from '../components/RuntimeStatus';
@@ -84,6 +85,19 @@ const DashboardPage = () => {
     []
   );
 
+  const spinnerStyle: CSSProperties = useMemo(
+    () => ({
+      width: 16,
+      height: 16,
+      borderRadius: '50%',
+      border: '2px solid rgba(148, 163, 184, 0.5)',
+      borderTopColor: '#2563eb',
+      animation: 'dashboard-spin 0.8s linear infinite',
+      marginRight: 8,
+    }),
+    []
+  );
+
   return (
     <Layout title="IP-CAM Analytics — Дашборд">
       <h1>Общий дашборд</h1>
@@ -132,7 +146,15 @@ const DashboardPage = () => {
             </div>
           </div>
 
-          <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, display: 'flex', flexDirection: 'column', gap: 8, position: 'relative' }}>
+            <style>
+              {`
+                @keyframes dashboard-spin {
+                  from { transform: rotate(0deg); }
+                  to { transform: rotate(360deg); }
+                }
+              `}
+            </style>
             <h3 style={{ margin: '0 0 4px' }}>Статус вычислений</h3>
             <RuntimeStatus runtime={runtime} error={runtimeError} />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -147,9 +169,14 @@ const DashboardPage = () => {
                   color: '#fff',
                   cursor: isTraining ? 'not-allowed' : 'pointer',
                   fontWeight: 600,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  minHeight: 40,
                 }}
               >
-                {isTraining ? 'Запуск...' : 'Обновить модель'}
+                {isTraining && <span style={spinnerStyle} role="status" aria-label="Запуск обучения" />}
+                {isTraining ? 'Обновляем модель...' : 'Обновить модель'}
               </button>
               {isTraining && (
                 <span style={{ fontSize: 12, color: '#475569' }}>
