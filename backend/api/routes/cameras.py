@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import AnyUrl, BaseModel, constr, validator
 from sqlalchemy.orm import Session
@@ -106,3 +106,31 @@ def add_camera(
             "active": camera.active,
         }
     }
+
+
+@router.delete("/api/cameras/{camera_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_camera(
+    camera_id: int,
+    session: Session = Depends(get_session),
+    ingest=Depends(get_ingest_manager),
+):
+    """Деактивирует камеру и останавливает соответствующий ingest-воркер."""
+
+    camera = (
+        session.query(Camera)
+        .filter(Camera.id == camera_id, Camera.active.is_(True))
+        .first()
+    )
+    if camera is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Активная камера с указанным идентификатором не найдена",
+        )
+
+    camera.active = False
+    session.add(camera)
+    session.commit()
+
+    ingest.stop_worker_for_camera(camera.name)
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
