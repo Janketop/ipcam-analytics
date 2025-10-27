@@ -3,16 +3,38 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
-from pydantic import AnyUrl, BaseModel, Field, constr, validator
+from pydantic import AnyUrl, BaseModel, Field, constr, root_validator, validator
 from sqlalchemy.orm import Session
 
 from backend.core.config import settings
 from backend.core.dependencies import get_ingest_manager, get_session
 from backend.models import Camera
+
+
+class ZonePoint(BaseModel):
+    """Координата вершины полигона в нормализованных значениях."""
+
+    x: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=1.0)
+
+
+class ZonePolygon(BaseModel):
+    """Описание зоны детекции как полигона."""
+
+    id: Optional[constr(strip_whitespace=True, min_length=1)] = None  # type: ignore[valid-type]
+    name: Optional[constr(strip_whitespace=True, min_length=1)] = None  # type: ignore[valid-type]
+    points: List[ZonePoint] = Field(default_factory=list, min_items=3)
+
+    @root_validator(pre=True)
+    def _ensure_points(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        points = values.get("points")
+        if not points:
+            raise ValueError("Зона должна содержать минимум три точки")
+        return values
 
 
 class CameraCreateRequest(BaseModel):
@@ -24,6 +46,7 @@ class CameraCreateRequest(BaseModel):
     detect_car: bool = True
     capture_entry_time: bool = True
     idle_alert_time: int = Field(default=settings.idle_alert_time, ge=10, le=86400)
+    zones: List[ZonePolygon] = Field(default_factory=list)
 
     @validator("rtsp_url")
     def ensure_rtsp_scheme(cls, value: AnyUrl) -> AnyUrl:
@@ -41,6 +64,7 @@ class CameraUpdateRequest(BaseModel):
     detect_car: Optional[bool]
     capture_entry_time: Optional[bool]
     idle_alert_time: Optional[int] = Field(default=None, ge=10, le=86400)
+    zones: Optional[List[ZonePolygon]]
 
     @validator("rtsp_url")
     def ensure_rtsp_scheme(cls, value: AnyUrl | None) -> AnyUrl | None:
@@ -109,6 +133,7 @@ def _camera_payload(camera: Camera) -> Dict[str, Any]:
         "detectCar": camera.detect_car,
         "captureEntryTime": camera.capture_entry_time,
         "idleAlertTime": camera.idle_alert_time or settings.idle_alert_time,
+        "zones": camera.zones or [],
     }
 
 
@@ -192,6 +217,15 @@ def add_camera(
             detail="Камера с таким именем уже существует",
         )
 
+    zones_payload = [
+        {
+            "id": zone.id,
+            "name": zone.name,
+            "points": [point.dict() for point in zone.points],
+        }
+        for zone in payload.zones
+    ]
+
     camera = Camera(
         name=name,
         rtsp_url=str(payload.rtsp_url),
@@ -199,6 +233,7 @@ def add_camera(
         detect_car=payload.detect_car,
         capture_entry_time=payload.capture_entry_time,
         idle_alert_time=payload.idle_alert_time,
+        zones=zones_payload,
     )
     session.add(camera)
     session.commit()
@@ -224,6 +259,7 @@ def update_camera(
         )
 
     updates = payload.dict(exclude_unset=True)
+    zones_provided = "zones" in payload.__fields_set__
     if not updates:
         return {"camera": _camera_payload(camera)}
 
@@ -233,6 +269,7 @@ def update_camera(
     original_detect_car = camera.detect_car
     original_capture_entry_time = camera.capture_entry_time
     original_idle_alert_time = camera.idle_alert_time
+    original_zones = camera.zones or []
 
     new_name = updates.get("name")
     if new_name:
@@ -260,6 +297,17 @@ def update_camera(
     if "idle_alert_time" in updates and updates["idle_alert_time"] is not None:
         camera.idle_alert_time = int(updates["idle_alert_time"])
 
+    if zones_provided:
+        zone_models = payload.zones or []
+        camera.zones = [
+            {
+                "id": zone.id,
+                "name": zone.name,
+                "points": [point.dict() for point in zone.points],
+            }
+            for zone in zone_models
+        ]
+
     session.add(camera)
     session.commit()
     session.refresh(camera)
@@ -275,20 +323,24 @@ def update_camera(
                 camera.idle_alert_time != original_idle_alert_time,
             ]
         )
+        zones_changed = camera.zones != original_zones
 
         if name_changed or rtsp_changed:
             ingest.stop_worker_for_camera(original_name)
             if camera.active:
                 ingest.start_worker_for_camera(camera)
-        elif flags_changed and camera.active:
+        elif camera.active and (flags_changed or zones_changed):
             worker = ingest.get_worker(camera.name)
             if worker is not None:
-                worker.update_flags(
-                    detect_person=camera.detect_person,
-                    detect_car=camera.detect_car,
-                    capture_entry_time=camera.capture_entry_time,
-                    idle_alert_time=camera.idle_alert_time,
-                )
+                if flags_changed:
+                    worker.update_flags(
+                        detect_person=camera.detect_person,
+                        detect_car=camera.detect_car,
+                        capture_entry_time=camera.capture_entry_time,
+                        idle_alert_time=camera.idle_alert_time,
+                    )
+                if zones_changed:
+                    worker.update_zones(camera.zones)
 
     return {"camera": _camera_payload(camera)}
 

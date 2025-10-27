@@ -31,6 +31,17 @@ def _add_missing_camera_flags(columns: set[str]) -> Iterable[str]:
         )
 
 
+def _add_missing_camera_zones(columns: set[str]) -> Iterable[str]:
+    """Добавляет колонку zones для хранения областей детекции."""
+
+    if "zones" in columns:
+        return []
+
+    yield (
+        "ALTER TABLE cameras ADD COLUMN zones JSONB NOT NULL DEFAULT '[]'::jsonb"
+    )
+
+
 def _add_missing_face_sample_embeddings(columns: set[str]) -> Iterable[tuple[str, str]]:
     """Добавляет недостающие колонки для хранения эмбеддингов лиц."""
 
@@ -57,6 +68,7 @@ def run_startup_migrations(session_factory: SessionFactory) -> None:
             return
 
         statements = list(_add_missing_camera_flags(existing_columns))
+        statements.extend(_add_missing_camera_zones(existing_columns))
         if statements:
             for statement in statements:
                 session.execute(text(statement))
@@ -64,8 +76,8 @@ def run_startup_migrations(session_factory: SessionFactory) -> None:
             session.commit()
 
             logger.info(
-                "Добавлены отсутствующие флаги камер: %s",
-                ", ".join(stmt.split()[4] for stmt in statements),
+                "Добавлены отсутствующие поля камер: %s",
+                ", ".join(stmt.split()[5] for stmt in statements if len(stmt.split()) > 5),
             )
         else:
             logger.info("Миграции флагов камер не требуются — схема актуальна.")
