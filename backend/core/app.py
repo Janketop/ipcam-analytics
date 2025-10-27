@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
+import importlib.util
 from datetime import datetime
 from typing import Optional
 
@@ -31,6 +33,20 @@ def _setup_cors(app: FastAPI) -> None:
     )
 
 
+def _log_gpu_status() -> None:
+    """Вывести в лог информацию о доступности GPU и версии CUDA."""
+    if importlib.util.find_spec("torch") is None:
+        logger.info("GPU Detected: False (CUDA N/A - пакет torch не установлен)")
+        return
+
+    torch = importlib.import_module("torch")
+    cuda_available = bool(getattr(torch.cuda, "is_available", lambda: False)())
+    cuda_version = getattr(getattr(torch, "version", object()), "cuda", None)
+    version_display = cuda_version if cuda_version else "N/A"
+
+    logger.info("GPU Detected: %s (CUDA %s)", str(cuda_available), version_display)
+
+
 def create_app() -> FastAPI:
     logger.info("Создание экземпляра FastAPI приложения")
     app = FastAPI(title=settings.app_title)
@@ -57,5 +73,10 @@ def create_app() -> FastAPI:
     app.state.retention_days = settings.retention_days
     app.state.cleanup_interval_hours = settings.retention_cleanup_interval_hours
 
-    logger.info("Приложение подготовлено: face_blur=%s, retention=%d дней", settings.face_blur, settings.retention_days)
+    _log_gpu_status()
+    logger.info(
+        "Приложение подготовлено: face_blur=%s, retention=%d дней",
+        settings.face_blur,
+        settings.retention_days,
+    )
     return app
