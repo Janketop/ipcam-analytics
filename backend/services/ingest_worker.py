@@ -53,6 +53,7 @@ class IngestWorker(Thread):
         detect_person: bool = True,
         detect_car: bool = True,
         capture_entry_time: bool = True,
+        idle_alert_time: int | float = settings.idle_alert_time,
     ) -> None:
         super().__init__(daemon=True)
         self.session_factory = session_factory
@@ -65,6 +66,7 @@ class IngestWorker(Thread):
         self.detect_person = detect_person
         self.detect_car = detect_car
         self.capture_entry_time = capture_entry_time
+        self.idle_alert_time = float(idle_alert_time)
         self.detector = AIDetector(
             name,
             face_blur=face_blur,
@@ -73,7 +75,7 @@ class IngestWorker(Thread):
             detect_car=detect_car,
             capture_entry_time=capture_entry_time,
         )
-        self.activity_detector = ActivityDetector()
+        self.activity_detector = ActivityDetector(idle_threshold=self.idle_alert_time)
         self.score_buffer: deque[float] = deque(maxlen=self.detector.score_smoothing)
         self.last_visual_jpeg: Optional[bytes] = None
 
@@ -99,6 +101,7 @@ class IngestWorker(Thread):
         detect_person: Optional[bool] = None,
         detect_car: Optional[bool] = None,
         capture_entry_time: Optional[bool] = None,
+        idle_alert_time: Optional[int | float] = None,
     ) -> None:
         if detect_person is not None:
             self.detect_person = bool(detect_person)
@@ -108,6 +111,10 @@ class IngestWorker(Thread):
             self.detect_car = bool(detect_car)
         if capture_entry_time is not None:
             self.capture_entry_time = bool(capture_entry_time)
+
+        if idle_alert_time is not None:
+            self.idle_alert_time = float(idle_alert_time)
+            self.activity_detector.idle_threshold = float(self.idle_alert_time)
 
         self.detector.update_flags(
             detect_person=self.detect_person,

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Camera, CameraStatus } from '../types/api';
 
 const DEFAULT_STATUS: CameraStatus = 'unknown';
+const DEFAULT_IDLE_ALERT_TIME = 300;
 const KNOWN_STATUSES: CameraStatus[] = ['online', 'offline', 'starting', 'stopping', 'no_signal', 'unknown'];
 
 type FetchOptions = {
@@ -126,6 +127,8 @@ const normalizeCamera = (raw: unknown): Camera | null => {
     obj.captureEntryTime ?? (obj as Record<string, unknown>).capture_entry_time,
     true,
   );
+  const idleAlertTimeRaw = obj.idleAlertTime ?? (obj as Record<string, unknown>).idle_alert_time;
+  const idleAlertTime = toNumberOrNull(idleAlertTimeRaw) ?? DEFAULT_IDLE_ALERT_TIME;
 
   return {
     id,
@@ -134,6 +137,7 @@ const normalizeCamera = (raw: unknown): Camera | null => {
     detectPerson,
     detectCar,
     captureEntryTime,
+    idleAlertTime,
     status,
     fps,
     uptimeSec,
@@ -234,6 +238,7 @@ export const useCameras = (apiBase: string) => {
               detectPerson: true,
               detectCar: true,
               captureEntryTime: true,
+              idleAlertTime: DEFAULT_IDLE_ALERT_TIME,
               status: mapped.status ?? DEFAULT_STATUS,
               fps: mapped.fps ?? null,
               uptimeSec: mapped.uptimeSec ?? null,
