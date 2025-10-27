@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS cameras (
   detect_person BOOLEAN DEFAULT TRUE,
   detect_car BOOLEAN DEFAULT TRUE,
   capture_entry_time BOOLEAN DEFAULT TRUE,
+  idle_alert_time INTEGER NOT NULL DEFAULT 300,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
