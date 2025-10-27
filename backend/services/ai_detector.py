@@ -147,9 +147,38 @@ class AIDetector:
             langs = [lang.strip() for lang in self.ocr_langs.split(",") if lang.strip()]
             if not langs:
                 langs = ["en"]
+            actual_device = (self.actual_device or "").lower()
+            use_gpu = bool(
+                actual_device.startswith("cuda")
+                and torch is not None
+                and hasattr(torch, "cuda")
+                and callable(getattr(torch.cuda, "is_available", None))
+                and torch.cuda.is_available()
+            )
             try:
-                self.ocr_reader = Reader(langs, gpu=False)
+                self.ocr_reader = Reader(langs, gpu=use_gpu)
             except Exception as exc:
+                if use_gpu:
+                    logger.warning(
+                        "[%s] Не удалось инициализировать OCR на GPU, пробуем CPU: %s",
+                        self.camera_name,
+                        exc,
+                        exc_info=True,
+                    )
+                    try:
+                        self.ocr_reader = Reader(langs, gpu=False)
+                    except Exception as cpu_exc:
+                        logger.warning(
+                            "[%s] Не удалось инициализировать OCR даже на CPU: %s",
+                            self.camera_name,
+                            cpu_exc,
+                            exc_info=True,
+                        )
+                        self._ocr_failed = True
+                        self.ocr_reader = None
+                        return self.ocr_reader
+                    else:
+                        return self.ocr_reader
                 logger.warning(
                     "[%s] Не удалось инициализировать OCR: %s",
                     self.camera_name,
