@@ -29,6 +29,19 @@ WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        pkg-config \
+        gfortran \
+        libopenblas-dev \
+        liblapack-dev \
+        libatlas-base-dev \
+        libboost-system-dev \
+        libboost-thread-dev \
+        libboost-python-dev \
+        libx11-dev \
+        libjpeg-dev \
+        libpng-dev \
         libglvnd0 \
         libgl1 \
         libgl1-mesa-dri \
@@ -44,9 +57,23 @@ RUN apt-get update \
     && ldconfig -p | grep -q "libGL.so.1"
 
 COPY requirements.txt constraints.txt ./
-RUN python3 -m pip install --no-cache-dir --default-timeout=${PIP_DEFAULT_TIMEOUT} -r requirements.txt -c constraints.txt \
-    && python3 -m pip uninstall -y opencv-python || true \
-    && python3 -m pip install --no-cache-dir --force-reinstall opencv-python-headless==4.10.0.84
+RUN set -eux; \
+    python3 -m pip install --no-cache-dir --default-timeout=${PIP_DEFAULT_TIMEOUT} \
+        --force-reinstall -r requirements.txt -c constraints.txt; \
+    python3 - <<'PY'
+import numpy
+
+expected = "1.26.4"
+if numpy.__version__ != expected:
+    raise SystemExit(
+        f"Pinned NumPy version {expected} is required, got {numpy.__version__}. "
+        "Make sure the constraints are applied correctly."
+    )
+PY
+
+RUN set -eux; \
+    python3 -m pip uninstall -y opencv-python || true; \
+    python3 -m pip install --no-cache-dir --force-reinstall opencv-python-headless==4.10.0.84
 
 COPY . ./backend
 EXPOSE 8000
