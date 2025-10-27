@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
+from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
@@ -28,23 +30,85 @@ class CameraCreateRequest(BaseModel):
 router = APIRouter()
 
 
+def _normalize_worker(worker_info: Dict[str, Any] | None) -> Dict[str, Any]:
+    if not worker_info:
+        return {
+            "fps": None,
+            "last_frame_at": None,
+            "uptime_seconds": None,
+        }
+
+    return {
+        "fps": worker_info.get("fps"),
+        "last_frame_at": worker_info.get("last_frame_at"),
+        "uptime_seconds": worker_info.get("uptime_seconds"),
+    }
+
+
+def _calc_status(worker, worker_info: Dict[str, Any] | None) -> str:
+    if worker is None:
+        return "offline"
+
+    if worker.stop_flag:
+        return "stopping"
+
+    if not worker.is_alive():
+        return "starting"
+
+    last_frame_at = None
+    if worker_info and worker_info.get("last_frame_at"):
+        try:
+            last_frame_at = datetime.fromisoformat(worker_info["last_frame_at"])
+        except ValueError:
+            last_frame_at = None
+
+    if last_frame_at is None:
+        return "online"
+
+    if last_frame_at.tzinfo is None:
+        last_frame_at = last_frame_at.replace(tzinfo=timezone.utc)
+
+    delta = datetime.now(timezone.utc) - last_frame_at.astimezone(timezone.utc)
+    if delta.total_seconds() > 30:
+        return "no_signal"
+
+    return "online"
+
+
 @router.get("/cameras")
-def list_cameras(session: Session = Depends(get_session)):
+def list_cameras(
+    session: Session = Depends(get_session),
+    ingest=Depends(get_ingest_manager),
+):
     cameras = (
         session.query(Camera)
         .filter(Camera.active.is_(True))
         .order_by(Camera.id)
         .all()
     )
-    return {
-        "cameras": [
+    runtime = ingest.runtime_status() if ingest else {"workers": []}
+    workers = runtime.get("workers") or []
+    workers_by_name = {
+        worker.get("camera"): worker for worker in workers if worker.get("camera")
+    }
+
+    items = []
+    for camera in cameras:
+        worker = ingest.get_worker(camera.name) if ingest else None
+        worker_info = workers_by_name.get(camera.name)
+        normalized = _normalize_worker(worker_info)
+        items.append(
             {
                 "id": camera.id,
                 "name": camera.name,
+                "status": _calc_status(worker, worker_info),
+                "fps": normalized.get("fps"),
+                "lastFrameTs": normalized.get("last_frame_at"),
+                "uptimeSec": normalized.get("uptime_seconds"),
             }
-            for camera in cameras
-        ]
-    }
+        )
+
+    return {"cameras": items}
 
 
 @router.get("/stream/{camera_name}")
