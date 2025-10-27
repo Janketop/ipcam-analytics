@@ -14,7 +14,7 @@ import cv2
 from backend.core.config import settings
 from backend.core.database import SessionFactory
 from backend.core.logger import logger
-from backend.models import Event
+from backend.models import Event, FaceSample
 
 from backend.services.activity_detector import ActivityDetector
 from backend.services.ai_detector import AIDetector
