@@ -44,10 +44,9 @@ class IngestManager:
                 .all()
             )
 
-        face_blur = settings.face_blur
         logger.info("Найдено %d активных камер для запуска", len(cameras))
         for camera in cameras:
-            self.start_worker_for_camera(camera, face_blur=face_blur)
+            self.start_worker_for_camera(camera)
 
     def stop_all(self) -> None:
         if not self.workers:
@@ -76,8 +75,11 @@ class IngestManager:
             )
             return existing_worker
 
-        if face_blur is None:
-            face_blur = settings.face_blur
+        if face_blur not in (None, False):
+            logger.info(
+                "Настройка размытия лиц больше не используется и будет проигнорирована"
+            )
+        face_blur = False
 
         worker = IngestWorker(
             self.session_factory,
