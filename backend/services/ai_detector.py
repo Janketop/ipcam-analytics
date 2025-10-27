@@ -20,7 +20,7 @@ from backend.core.logger import logger
 from backend.services.snapshots import load_face_cascade, prepare_snapshot
 
 if TYPE_CHECKING:
-    from backend.services.employee_recognizer import EmployeeRecognizer
+    from backend.services.employee_recognizer import EmployeeRecognizer, RecognizedEmployee
 
 PHONE_CLASS = "cell phone"
 
@@ -456,15 +456,34 @@ class AIDetector:
             bbox_h = max(1.0, float(bbox_arr[3] - bbox_arr[1]))
 
             employee_name = None
+            employee_info: Optional[Dict[str, Any]] = None
             if recognizer is not None:
                 try:
-                    employee_name = recognizer.identify(frame, bbox_arr[:4].tolist())
+                    bbox_coords = bbox_arr[:4].tolist()
+                    embedding_result = recognizer.compute_embedding(frame, bbox_coords)
                 except Exception:
                     logger.exception(
-                        "[%s] Ошибка при распознавании сотрудника",
+                        "[%s] Ошибка при подготовке эмбеддинга лица",
                         self.camera_name,
                     )
-                    employee_name = None
+                    embedding_result = None
+
+                if embedding_result is not None:
+                    try:
+                        match = recognizer.identify(embedding_result)
+                    except Exception:
+                        logger.exception(
+                            "[%s] Ошибка при распознавании сотрудника",
+                            self.camera_name,
+                        )
+                        match = None
+                    if match is not None:
+                        employee_info = {
+                            "id": match.employee_id,
+                            "name": match.employee_name,
+                            "distance": float(match.distance),
+                        }
+                        employee_name = match.employee_name
 
             def point_valid(idx, conf_threshold=0.2):
                 if idx >= len(kpts):
@@ -579,6 +598,7 @@ class AIDetector:
                     "confidence": mean_conf,
                     "bbox": bbox_arr[:4].tolist(),
                     "employee_name": employee_name,
+                    "employee": employee_info,
                 }
             )
 
