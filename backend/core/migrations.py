@@ -38,18 +38,53 @@ def run_startup_migrations(session_factory: SessionFactory) -> None:
             return
 
         statements = list(_add_missing_camera_flags(existing_columns))
-        if not statements:
-            logger.info("Миграции флагов камер не требуются — схема актуальна.")
-            return
+        if statements:
+            for statement in statements:
+                session.execute(text(statement))
 
-        for statement in statements:
+            session.commit()
+
+            logger.info(
+                "Добавлены отсутствующие флаги камер: %s",
+                ", ".join(stmt.split()[4] for stmt in statements),
+            )
+        else:
+            logger.info("Миграции флагов камер не требуются — схема актуальна.")
+
+        face_samples_statements = (
+            """
+            CREATE TABLE IF NOT EXISTS employees (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                created_at TIMESTAMPTZ DEFAULT now(),
+                updated_at TIMESTAMPTZ DEFAULT now()
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS face_samples (
+                id BIGSERIAL PRIMARY KEY,
+                event_id BIGINT UNIQUE REFERENCES events(id) ON DELETE CASCADE,
+                employee_id INT REFERENCES employees(id) ON DELETE SET NULL,
+                camera_id INT REFERENCES cameras(id) ON DELETE SET NULL,
+                snapshot_url TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'unverified',
+                candidate_key TEXT,
+                captured_at TIMESTAMPTZ DEFAULT now(),
+                updated_at TIMESTAMPTZ DEFAULT now()
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS face_samples_status_idx ON face_samples(status)",
+            "CREATE INDEX IF NOT EXISTS face_samples_employee_idx ON face_samples(employee_id)",
+            "CREATE INDEX IF NOT EXISTS face_samples_captured_idx ON face_samples(captured_at)",
+        )
+
+        for statement in face_samples_statements:
             session.execute(text(statement))
 
         session.commit()
 
         logger.info(
-            "Добавлены отсутствующие флаги камер: %s",
-            ", ".join(stmt.split()[4] for stmt in statements),
+            "Убедились в наличии таблиц employees/face_samples и индексов.",
         )
 
 

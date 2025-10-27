@@ -7,6 +7,7 @@ const links = [
   { href: '/dashboard', label: 'Дашборд' },
   { href: '/events', label: 'События' },
   { href: '/cameras', label: 'Камеры' },
+  { href: '/identification', label: 'Определение' },
 ];
 
 type LayoutProps = {
