@@ -6,8 +6,9 @@ import math
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from importlib import import_module, util
 from threading import Thread
-from typing import Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 import cv2
 
@@ -101,6 +102,9 @@ class IngestWorker(Thread):
         self.status_stale_seconds = settings.ingest_status_stale_threshold
         self._last_status_sent_monotonic: Optional[float] = None
 
+        self._face_sample_model: Any = None
+        self._face_sample_import_failed = False
+
     def update_flags(
         self,
         *,
@@ -161,6 +165,35 @@ class IngestWorker(Thread):
             recognizer.employee_count,
         )
         return recognizer
+
+    def _get_face_sample_model(self) -> Any:
+        if self._face_sample_import_failed:
+            return None
+
+        if self._face_sample_model is not None:
+            return self._face_sample_model
+
+        spec = util.find_spec("backend.models.face_sample")
+        if spec is None:
+            self._face_sample_import_failed = True
+            logger.error(
+                "[%s] Модуль backend.models.face_sample не найден; образцы лиц сохраняться не будут",
+                self.name,
+            )
+            return None
+
+        module = import_module("backend.models.face_sample")
+        face_sample_model = getattr(module, "FaceSample", None)
+        if face_sample_model is None:
+            self._face_sample_import_failed = True
+            logger.error(
+                "[%s] В модуле backend.models.face_sample отсутствует класс FaceSample",
+                self.name,
+            )
+            return None
+
+        self._face_sample_model = face_sample_model
+        return face_sample_model
 
     def _submit_async(self, coro: Awaitable[None], payload_kind: str) -> None:
         if not self.main_loop or self.main_loop.is_closed():
@@ -547,27 +580,25 @@ class IngestWorker(Thread):
                             session.add(event)
                             session.flush()
 
-                            if (
-                                payload["kind"] == "activity"
-                                and snap_url
-                                and not session.query(FaceSample)
-                                .filter(FaceSample.event_id == event.id)
-                                .first()
-                            ):
-                                candidate_raw = meta.get("person_id") or meta.get("personId")
-                                candidate_key = None
-                                if isinstance(candidate_raw, str) and candidate_raw.strip():
-                                    candidate_key = candidate_raw.strip()
+                            if payload["kind"] == "activity" and snap_url:
+                                face_sample_model = self._get_face_sample_model()
+                                if face_sample_model is not None and not session.query(face_sample_model).filter(
+                                    face_sample_model.event_id == event.id
+                                ).first():
+                                    candidate_raw = meta.get("person_id") or meta.get("personId")
+                                    candidate_key = None
+                                    if isinstance(candidate_raw, str) and candidate_raw.strip():
+                                        candidate_key = candidate_raw.strip()
 
-                                sample = FaceSample(
-                                    event_id=event.id,
-                                    camera_id=self.cam_id,
-                                    snapshot_url=snap_url,
-                                    status=FaceSample.STATUS_UNVERIFIED,
-                                    candidate_key=candidate_key,
-                                    captured_at=ts,
-                                )
-                                session.add(sample)
+                                    sample = face_sample_model(
+                                        event_id=event.id,
+                                        camera_id=self.cam_id,
+                                        snapshot_url=snap_url,
+                                        status=face_sample_model.STATUS_UNVERIFIED,
+                                        candidate_key=candidate_key,
+                                        captured_at=ts,
+                                    )
+                                    session.add(sample)
                         persisted_events.append(
                             {
                                 "id": event.id,
