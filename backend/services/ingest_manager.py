@@ -39,18 +39,7 @@ class IngestManager:
         face_blur = settings.face_blur
         logger.info("Найдено %d активных камер для запуска", len(cameras))
         for camera in cameras:
-            worker = IngestWorker(
-                self.session_factory,
-                camera.id,
-                camera.name,
-                camera.rtsp_url,
-                face_blur=face_blur,
-                broadcaster=self.broadcaster,
-                main_loop=self.main_loop,
-            )
-            worker.start()
-            self.workers.append(worker)
-            logger.info("Ingest-воркер для камеры '%s' (#%s) запущен", camera.name, camera.id)
+            self.start_worker_for_camera(camera, face_blur=face_blur)
 
     def stop_all(self) -> None:
         if not self.workers:
@@ -65,6 +54,38 @@ class IngestManager:
             if worker.name == name:
                 return worker
         return None
+
+    def start_worker_for_camera(self, camera: Camera, face_blur: bool | None = None) -> IngestWorker:
+        """Запускает ingest-воркер для переданной камеры."""
+
+        existing_worker = self.get_worker(camera.name)
+        if existing_worker:
+            logger.info(
+                "Ingest-воркер для камеры '%s' уже запущен, повторный запуск пропущен",
+                camera.name,
+            )
+            return existing_worker
+
+        if face_blur is None:
+            face_blur = settings.face_blur
+
+        worker = IngestWorker(
+            self.session_factory,
+            camera.id,
+            camera.name,
+            camera.rtsp_url,
+            face_blur=face_blur,
+            broadcaster=self.broadcaster,
+            main_loop=self.main_loop,
+        )
+        worker.start()
+        self.workers.append(worker)
+        logger.info(
+            "Ingest-воркер для камеры '%s' (#%s) запущен",
+            camera.name,
+            camera.id,
+        )
+        return worker
 
     def runtime_status(self) -> dict:
         workers = [worker.runtime_status() for worker in self.workers]
