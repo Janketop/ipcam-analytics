@@ -1,6 +1,7 @@
 """Логика AI-детекции для обработки кадров."""
 from __future__ import annotations
 
+import hashlib
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -299,7 +300,9 @@ class AIDetector:
         cv2.putText(snap, label, (x1, max(30, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 165, 0), 2)
         return prepare_snapshot(snap, self.face_blur, self.face_cascade)
 
-    def process_frame(self, frame) -> Tuple[bool, float, Any, Any, List[Dict[str, Any]]]:
+    def process_frame(
+        self, frame
+    ) -> Tuple[bool, float, Any, Any, List[Dict[str, Any]], List[Dict[str, Any]]]:
         detect_person = self.detect_person
         detect_car = self.detect_car
 
@@ -388,6 +391,8 @@ class AIDetector:
             car_events.append({"plate": plate_text, "confidence": float(car["conf"]), "snapshot": car_snapshot})
             self.last_car_event_time = now_monotonic
 
+        people_data: List[Dict[str, Any]] = []
+
         if not detect_person:
             people_iter = []
         elif pose_res is None or pose_res.boxes is None or pose_res.keypoints is None:
@@ -397,13 +402,32 @@ class AIDetector:
             kpts_conf = None
             if getattr(pose_res.keypoints, "conf", None) is not None:
                 kpts_conf = pose_res.keypoints.conf.cpu().numpy()
+            boxes_xyxy = pose_res.boxes.xyxy.cpu().numpy()
+            raw_ids = getattr(pose_res.boxes, "id", None)
+            box_ids = None
+            if raw_ids is not None:
+                try:
+                    if hasattr(raw_ids, "detach"):
+                        box_ids = raw_ids.detach().cpu().numpy().reshape(-1)
+                    elif hasattr(raw_ids, "cpu"):
+                        box_ids = raw_ids.cpu().numpy().reshape(-1)
+                    else:
+                        box_ids = np.asarray(raw_ids).reshape(-1)
+                except Exception:
+                    box_ids = None
+            id_iter = (
+                box_ids.tolist()
+                if box_ids is not None
+                else [None] * len(kpts_xy)
+            )
             people_iter = zip(
                 kpts_xy,
-                pose_res.boxes.xyxy.cpu().numpy(),
+                boxes_xyxy,
                 kpts_conf if kpts_conf is not None else [None] * len(kpts_xy),
+                id_iter,
             )
 
-        for kpts, bbox, kconf in people_iter:
+        for kpts, bbox, kconf, box_id in people_iter:
             try:
                 le = kpts[1]
                 re = kpts[2]
@@ -502,6 +526,22 @@ class AIDetector:
                         center_y = int((bbox[1] + bbox[3]) * 0.5)
                         cv2.putText(vis, "POSE PHONE", (x1, max(15, center_y)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
 
+            mean_conf = float(np.mean(kconf)) if kconf is not None else 0.0
+            if box_id is not None:
+                person_id = str(int(box_id))
+            else:
+                key = np.concatenate([bbox, kpts.flatten()])
+                key = np.round(key, 1)
+                digest = hashlib.sha1(key.tobytes()).hexdigest()[:16]
+                person_id = digest
+            people_data.append(
+                {
+                    "id": person_id,
+                    "keypoints": kpts.copy(),
+                    "confidence": mean_conf,
+                }
+            )
+
         if detect_person and need_overlay and vis is not None:
             for phone in phones:
                 x1, y1, x2, y2 = phone["bbox"]
@@ -516,4 +556,11 @@ class AIDetector:
             snap_src = vis if (self.visualize and vis is not None) else frame
             snapshot = prepare_snapshot(snap_src, self.face_blur, self.face_cascade)
 
-        return phone_usage, best_conf, snapshot, vis if self.visualize else None, car_events
+        return (
+            phone_usage,
+            best_conf,
+            snapshot,
+            vis if self.visualize else None,
+            car_events,
+            people_data,
+        )
