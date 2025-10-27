@@ -57,7 +57,18 @@ RUN apt-get update \
     && ldconfig -p | grep -q "libGL.so.1"
 
 COPY requirements.txt constraints.txt ./
-RUN python3 -m pip install --no-cache-dir --default-timeout=${PIP_DEFAULT_TIMEOUT} -r requirements.txt -c constraints.txt \
+RUN python3 -m pip install --no-cache-dir --default-timeout=${PIP_DEFAULT_TIMEOUT} \
+        --force-reinstall -r requirements.txt -c constraints.txt \
+    && python3 - <<'PY'
+import numpy
+
+expected = "1.26.4"
+if numpy.__version__ != expected:
+    raise SystemExit(
+        f"Pinned NumPy version {expected} is required, got {numpy.__version__}. "
+        "Make sure the constraints are applied correctly."
+    )
+PY
     && python3 -m pip uninstall -y opencv-python || true \
     && python3 -m pip install --no-cache-dir --force-reinstall opencv-python-headless==4.10.0.84
 
