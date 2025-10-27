@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     Text,
     func,
     text,
@@ -52,6 +53,9 @@ class FaceSample(Base):
         server_default=text("'unverified'"),
     )
     candidate_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    embedding: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
+    embedding_dim: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    embedding_model: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     captured_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -69,6 +73,16 @@ class FaceSample(Base):
     def mark_client(self) -> None:
         self.employee_id = None
         self.status = self.STATUS_CLIENT
+
+    def set_embedding(self, data: bytes, *, dim: int, model: str) -> None:
+        self.embedding = data
+        self.embedding_dim = int(dim)
+        self.embedding_model = model
+
+    def clear_embedding(self) -> None:
+        self.embedding = None
+        self.embedding_dim = None
+        self.embedding_model = None
 
     def __repr__(self) -> str:  # pragma: no cover - отладка
         return f"FaceSample(id={self.id!r}, status={self.status!r}, snapshot={self.snapshot_url!r})"

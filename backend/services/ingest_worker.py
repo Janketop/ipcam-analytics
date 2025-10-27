@@ -79,6 +79,8 @@ class IngestWorker(Thread):
         )
         self.employee_recognizer = self._init_employee_recognizer()
         self.detector.set_employee_recognizer(self.employee_recognizer)
+        self.employee_presence_cooldown = float(settings.face_recognition_presence_cooldown)
+        self._employee_presence_last: dict[int, float] = {}
         self.activity_detector = ActivityDetector(idle_threshold=self.idle_alert_time)
         self.score_buffer: deque[float] = deque(maxlen=self.detector.score_smoothing)
         self.last_visual_jpeg: Optional[bytes] = None
@@ -143,27 +145,29 @@ class IngestWorker(Thread):
 
     def _init_employee_recognizer(self) -> Optional[EmployeeRecognizer]:
         try:
-            with self.session_factory() as session:
-                recognizer = EmployeeRecognizer.from_session(session)
+            recognizer = EmployeeRecognizer(
+                self.session_factory,
+                threshold=settings.face_recognition_threshold,
+                encoding_model=settings.face_recognition_model,
+            )
         except Exception:
             logger.exception(
-                "[%s] Не удалось загрузить эталонные снимки сотрудников",
+                "[%s] Не удалось инициализировать распознаватель сотрудников",
                 self.name,
             )
             return None
 
-        if recognizer is None:
+        if recognizer.has_samples:
             logger.info(
-                "[%s] Эталонные снимки сотрудников отсутствуют", self.name
+                "[%s] Подготовлен распознаватель сотрудников (%d эмбеддингов, %d сотрудников)",
+                self.name,
+                recognizer.sample_count,
+                recognizer.employee_count,
             )
-            return None
-
-        logger.info(
-            "[%s] Подготовлен распознаватель сотрудников (%d снимков, %d сотрудников)",
-            self.name,
-            recognizer.sample_count,
-            recognizer.employee_count,
-        )
+        else:
+            logger.info(
+                "[%s] Эталонные эмбеддинги сотрудников отсутствуют", self.name
+            )
         return recognizer
 
     def _get_face_sample_model(self) -> Any:
@@ -482,6 +486,40 @@ class IngestWorker(Thread):
                     conf = conf_raw
 
                 now = datetime.now(timezone.utc)
+                recognized_employees: dict[int, dict[str, object]] = {}
+                employee_by_person: dict[str, dict[str, object]] = {}
+                for person in people:
+                    employee_info = person.get("employee") if isinstance(person, dict) else None
+                    person_id_raw = person.get("id") if isinstance(person, dict) else None
+                    if employee_info is None or not isinstance(employee_info, dict):
+                        continue
+
+                    emp_id_raw = employee_info.get("id")
+                    try:
+                        emp_id = int(emp_id_raw) if emp_id_raw is not None else None
+                    except (TypeError, ValueError):
+                        emp_id = None
+
+                    distance_val = _normalize_meta_number(employee_info.get("distance"))
+                    if distance_val is None:
+                        distance_val = 0.0
+                    employee_name = employee_info.get("name")
+
+                    if emp_id is not None:
+                        recognized_employees[emp_id] = {
+                            "id": emp_id,
+                            "name": employee_name,
+                            "distance": distance_val,
+                        }
+
+                    if person_id_raw is not None:
+                        person_key = str(person_id_raw)
+                        employee_by_person[person_key] = {
+                            "id": emp_id,
+                            "name": employee_name,
+                            "distance": distance_val,
+                        }
+
                 activity_updates = self.activity_detector.update(people, now=now)
                 events_to_store = []
                 ev_type = None
@@ -524,6 +562,17 @@ class IngestWorker(Thread):
                         "duration_idle_sec": _normalize_meta_number(activity.get("idle_seconds")),
                         "duration_away_sec": _normalize_meta_number(activity.get("away_seconds")),
                     }
+                    person_key = str(activity_id) if activity_id is not None else None
+                    employee_meta = employee_by_person.get(person_key) if person_key is not None else None
+                    if employee_meta:
+                        emp_id = employee_meta.get("id")
+                        if emp_id is not None:
+                            meta["employeeId"] = int(emp_id)
+                        if employee_meta.get("name"):
+                            meta["employeeName"] = employee_meta.get("name")
+                        distance_val = _normalize_meta_number(employee_meta.get("distance"))
+                        if distance_val is not None:
+                            meta["faceDistance"] = distance_val
                     meta = {key: value for key, value in meta.items() if value is not None}
 
                     events_to_store.append(
@@ -536,6 +585,38 @@ class IngestWorker(Thread):
                             "kind": "activity",
                         }
                     )
+
+                if recognized_employees:
+                    current_monotonic = time.monotonic()
+                    for emp_id, info in recognized_employees.items():
+                        last_seen = self._employee_presence_last.get(emp_id)
+                        if (
+                            last_seen is not None
+                            and self.employee_presence_cooldown > 0.0
+                            and current_monotonic - last_seen < self.employee_presence_cooldown
+                        ):
+                            continue
+
+                        self._employee_presence_last[emp_id] = current_monotonic
+                        distance_val = _normalize_meta_number(info.get("distance")) or 0.0
+                        presence_meta = {
+                            "employeeId": emp_id,
+                            "employeeName": info.get("name"),
+                            "distance": distance_val,
+                        }
+                        presence_meta = {
+                            key: value for key, value in presence_meta.items() if value is not None
+                        }
+                        events_to_store.append(
+                            {
+                                "ts": now,
+                                "type": "EMPLOYEE_PRESENT",
+                                "confidence": max(0.0, 1.0 - float(distance_val)),
+                                "snapshot": snapshot_img,
+                                "meta": presence_meta,
+                                "kind": "employee",
+                            }
+                        )
 
                 if self.detect_car:
                     for car_ev in car_events:
