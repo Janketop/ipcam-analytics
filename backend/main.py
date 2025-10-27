@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
@@ -45,8 +46,10 @@ async def _init_default_cameras(session_factory: SessionFactory) -> None:
         logger.info("Камеры из настроек уже присутствуют в базе")
 
 
-@app.on_event("startup")
-async def startup_event() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Жизненный цикл приложения: инициализация и корректное завершение сервисов."""
+
     session_factory = app.state.session_factory
     ingest = app.state.ingest_manager
 
@@ -71,24 +74,31 @@ async def startup_event() -> None:
     app.state.background_tasks.append(task)
     logger.info("Запущена фоновая задача очистки старых данных")
 
+    try:
+        yield
+    finally:
+        ingest = app.state.ingest_manager
+        logger.info("Останавливаю ingest-воркеры")
+        ingest.stop_all()
+        logger.info("Остановка ingest-воркеров инициирована, ожидаю фоновые задачи")
 
-@app.on_event("shutdown")
-async def shutdown_event() -> None:
-    ingest = app.state.ingest_manager
-    logger.info("Останавливаю ingest-воркеры")
-    ingest.stop_all()
-    logger.info("Остановка ingest-воркеров инициирована, ожидаю фоновые задачи")
-    for task in app.state.background_tasks:
-        task.cancel()
-    for task in app.state.background_tasks:
-        try:
-            await task
-        except asyncio.CancelledError:
-            task_name = task.get_name() if hasattr(task, "get_name") else repr(task)
-            logger.warning("Фоновая задача %s остановлена по сигналу отмены", task_name)
-        except Exception:
-            task_name = task.get_name() if hasattr(task, "get_name") else repr(task)
-            logger.exception("Фоновая задача %s завершилась с ошибкой", task_name)
+        tasks = list(app.state.background_tasks)
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                task_name = task.get_name() if hasattr(task, "get_name") else repr(task)
+                logger.warning("Фоновая задача %s остановлена по сигналу отмены", task_name)
+            except Exception:
+                task_name = task.get_name() if hasattr(task, "get_name") else repr(task)
+                logger.exception("Фоновая задача %s завершилась с ошибкой", task_name)
+
+        app.state.background_tasks.clear()
+
+
+app.router.lifespan_context = lifespan
 
 
 def get_app() -> FastAPI:
@@ -100,7 +110,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        "backend.main:app",
+        app,
         host="0.0.0.0",
         port=8000,
         log_config=LOGGING_CONFIG,
