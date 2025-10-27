@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, TYPE_CHECKING
+from typing import Any, List, TYPE_CHECKING
 
 from sqlalchemy import Boolean, DateTime, Integer, Text, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.core.config import settings
@@ -31,6 +32,12 @@ class Camera(Base):
     )
     capture_entry_time: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("true")
+    )
+    zones: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text("'[]'::jsonb"),
+        default=list,
     )
     idle_alert_time: Mapped[int] = mapped_column(
         Integer,

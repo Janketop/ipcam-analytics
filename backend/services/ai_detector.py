@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -54,6 +54,7 @@ class AIDetector:
         detect_person: bool = True,
         detect_car: bool = True,
         capture_entry_time: bool = True,
+        zones: Optional[Sequence[Sequence[Tuple[float, float]]]] = None,
     ) -> None:
         self.camera_name = camera_name
         self.face_blur = face_blur
@@ -115,6 +116,8 @@ class AIDetector:
         self.phone_idx: Optional[int] = None
         self.last_car_event_time = 0.0
         self.employee_recognizer: Optional["EmployeeRecognizer"] = None
+        self._zones: list[list[tuple[float, float]]] = []
+        self.update_zones(zones)
 
     def update_flags(
         self,
@@ -129,6 +132,55 @@ class AIDetector:
             self.detect_car = bool(detect_car)
         if capture_entry_time is not None:
             self.capture_entry_time = bool(capture_entry_time)
+
+    def update_zones(
+        self, zones: Optional[Sequence[Sequence[Tuple[float, float]]]] = None
+    ) -> None:
+        normalized: list[list[tuple[float, float]]] = []
+        if zones:
+            for polygon in zones:
+                try:
+                    points = [
+                        (
+                            max(0.0, min(1.0, float(pt[0]))),
+                            max(0.0, min(1.0, float(pt[1]))),
+                        )
+                        for pt in polygon
+                    ]
+                except (TypeError, ValueError):
+                    continue
+                if len(points) >= 3:
+                    normalized.append(points)
+        self._zones = normalized
+
+    def _point_in_polygon(
+        self, x: float, y: float, polygon: Sequence[Tuple[float, float]]
+    ) -> bool:
+        inside = False
+        j = len(polygon) - 1
+        for i, (xi, yi) in enumerate(polygon):
+            xj, yj = polygon[j]
+            intersects = (yi > y) != (yj > y)
+            if intersects:
+                denom = (yj - yi) or 1e-9
+                intersect_x = xi + (y - yi) * (xj - xi) / denom
+                if intersect_x > x:
+                    inside = not inside
+            j = i
+        return inside
+
+    def _is_point_in_zones(
+        self, x: float, y: float, width: int, height: int
+    ) -> bool:
+        if not self._zones or width <= 0 or height <= 0:
+            return True
+
+        nx = x / float(max(1, width))
+        ny = y / float(max(1, height))
+        for polygon in self._zones:
+            if self._point_in_polygon(nx, ny, polygon):
+                return True
+        return False
 
     def set_employee_recognizer(
         self, recognizer: Optional["EmployeeRecognizer"]
@@ -371,6 +423,29 @@ class AIDetector:
         car_events: List[Dict[str, Any]] = []
         now_monotonic = time.monotonic()
         h_frame, w_frame = frame.shape[:2]
+        if need_overlay and vis is not None and self._zones:
+            zone_color = (65, 105, 225)
+            for idx, polygon in enumerate(self._zones, start=1):
+                pts = np.array(
+                    [
+                        [int(pt[0] * w_frame), int(pt[1] * h_frame)]
+                        for pt in polygon
+                    ],
+                    dtype=np.int32,
+                )
+                if pts.size < 6:
+                    continue
+                cv2.polylines(vis, [pts], True, zone_color, 2)
+                centroid = pts.mean(axis=0)
+                cv2.putText(
+                    vis,
+                    f"Z{idx}",
+                    (int(centroid[0]), int(centroid[1])),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    zone_color,
+                    2,
+                )
         for car in cars:
             x1, y1, x2, y2 = map(int, car["bbox"])
             x1 = max(0, min(x1, w_frame - 1))
@@ -378,6 +453,10 @@ class AIDetector:
             y1 = max(0, min(y1, h_frame - 1))
             y2 = max(0, min(y2, h_frame))
             if x2 <= x1 or y2 <= y1:
+                continue
+            center_x = float((x1 + x2) * 0.5)
+            center_y = float((y1 + y2) * 0.5)
+            if not self._is_point_in_zones(center_x, center_y, w_frame, h_frame):
                 continue
             car_mask = fg_mask[y1:y2, x1:x2] if fg_mask is not None else None
             moving_ratio = float(np.mean(car_mask > 0)) if car_mask is not None and car_mask.size else 0.0
@@ -446,6 +525,10 @@ class AIDetector:
                 padded = np.zeros(4, dtype=np.float32)
                 padded[: bbox_arr.size] = bbox_arr
                 bbox_arr = padded
+            center_x = float((bbox_arr[0] + bbox_arr[2]) * 0.5)
+            center_y = float((bbox_arr[1] + bbox_arr[3]) * 0.5)
+            if not self._is_point_in_zones(center_x, center_y, w_frame, h_frame):
+                continue
             try:
                 le = kpts[1]
                 re = kpts[2]

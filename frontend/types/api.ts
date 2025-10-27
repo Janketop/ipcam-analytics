@@ -50,6 +50,17 @@ export type Stat = {
 
 export type CameraStatus = 'online' | 'offline' | 'starting' | 'stopping' | 'no_signal' | 'unknown';
 
+export type ZonePoint = {
+  x: number;
+  y: number;
+};
+
+export type CameraZone = {
+  id?: string;
+  name?: string | null;
+  points: ZonePoint[];
+};
+
 export type Camera = {
   id: number;
   name: string;
@@ -58,6 +69,7 @@ export type Camera = {
   detectCar: boolean;
   captureEntryTime: boolean;
   idleAlertTime: number;
+  zones: CameraZone[];
   status?: CameraStatus;
   fps?: number | null;
   lastFrameTs?: string | null;
