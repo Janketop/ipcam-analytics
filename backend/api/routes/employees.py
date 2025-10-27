@@ -10,7 +10,11 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.core.dependencies import get_session
+from backend.core.logger import logger
 from backend.models import Camera, Employee, FaceSample
+from backend.services.employee_recognizer import EmployeeRecognizer
+from backend.services.face_embeddings import compute_face_embedding_from_snapshot
+from backend.core.config import settings
 
 
 router = APIRouter()
@@ -171,11 +175,44 @@ def assign_face_sample(
     if employee is None:
         raise HTTPException(status_code=404, detail="Сотрудник не найден")
 
+    if not sample.snapshot_url:
+        raise HTTPException(
+            status_code=422,
+            detail="У снимка отсутствует файл изображения для расчёта эмбеддинга",
+        )
+
+    try:
+        embedding_result = compute_face_embedding_from_snapshot(
+            sample.snapshot_url,
+            encoding_model=settings.face_recognition_model,
+        )
+    except Exception:
+        logger.exception(
+            "Не удалось вычислить эмбеддинг лица для выборки #%s", sample.id
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Ошибка при вычислении эмбеддинга лица. Проверьте логи сервиса.",
+        ) from None
+
+    if embedding_result is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Не удалось найти лицо на снимке. Загрузите более чёткое фото сотрудника.",
+        )
+
     sample.mark_employee(employee.id)
+    sample.set_embedding(
+        embedding_result.as_bytes(),
+        dim=embedding_result.dimension,
+        model=embedding_result.model,
+    )
     sample.updated_at = datetime.now(timezone.utc)
     session.add(sample)
     session.commit()
     session.refresh(sample)
+
+    EmployeeRecognizer.notify_embeddings_updated()
 
     return {
         "faceSample": _serialize_face_sample(
@@ -198,13 +235,25 @@ def mark_face_sample(
     if sample is None:
         raise HTTPException(status_code=404, detail="Снимок не найден")
 
+    should_notify = False
     if payload.status == FaceSample.STATUS_CLIENT:
+        prev_state = (sample.status, sample.employee_id, sample.embedding)
         sample.mark_client()
+        sample.clear_embedding()
+        should_notify = prev_state != (sample.status, sample.employee_id, sample.embedding)
     elif payload.status == FaceSample.STATUS_DISCARDED:
+        prev_state = (sample.status, sample.employee_id, sample.embedding)
         sample.status = FaceSample.STATUS_DISCARDED
         sample.employee_id = None
+        sample.clear_embedding()
+        should_notify = prev_state != (sample.status, sample.employee_id, sample.embedding)
     else:
+        prev_state = (sample.status, sample.employee_id, sample.embedding)
         sample.status = FaceSample.STATUS_UNVERIFIED
+        sample.employee_id = None
+        sample.clear_embedding()
+        should_notify = prev_state != (sample.status, sample.employee_id, sample.embedding)
+
     sample.updated_at = datetime.now(timezone.utc)
     session.add(sample)
     session.commit()
@@ -223,6 +272,9 @@ def mark_face_sample(
         .filter(Camera.id == sample.camera_id)
         .scalar()
     )
+
+    if should_notify:
+        EmployeeRecognizer.notify_embeddings_updated()
 
     return {
         "faceSample": _serialize_face_sample(sample, camera_name, employee)
