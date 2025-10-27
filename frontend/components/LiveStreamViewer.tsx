@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ChangeEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { Camera } from '../types/api';
 
 type LiveStreamViewerProps = {
@@ -9,13 +9,26 @@ type LiveStreamViewerProps = {
 export const LiveStreamViewer = ({ cameras, normalizedApiBase }: LiveStreamViewerProps) => {
   const [liveStreamOverride, setLiveStreamOverride] = useState<string | null>(null);
   const [liveExpanded, setLiveExpanded] = useState(false);
+  const [selectedCamera, setSelectedCamera] = useState<string | null>(() => cameras[0]?.name ?? null);
 
-  const firstCamera = cameras[0]?.name;
+  useEffect(() => {
+    if (cameras.length === 0) {
+      setSelectedCamera(null);
+      return;
+    }
+
+    setSelectedCamera(prev => {
+      if (prev && cameras.some(camera => camera.name === prev)) {
+        return prev;
+      }
+      return cameras[0]?.name ?? null;
+    });
+  }, [cameras]);
 
   const defaultLiveStreamUrl = useMemo(() => {
-    if (!firstCamera) return null;
-    return `${normalizedApiBase}/stream/${encodeURIComponent(firstCamera)}`;
-  }, [firstCamera, normalizedApiBase]);
+    if (!selectedCamera) return null;
+    return `${normalizedApiBase}/stream/${encodeURIComponent(selectedCamera)}`;
+  }, [normalizedApiBase, selectedCamera]);
 
   const liveStreamUrl = liveStreamOverride ?? defaultLiveStreamUrl;
 
@@ -24,11 +37,15 @@ export const LiveStreamViewer = ({ cameras, normalizedApiBase }: LiveStreamViewe
   }, [defaultLiveStreamUrl]);
 
   const handleLiveError = useCallback(() => {
-    if (!firstCamera || typeof window === 'undefined') return;
+    if (!selectedCamera || typeof window === 'undefined') return;
     const fallbackBase = window.location.origin.replace(/\/$/, '');
-    const fallbackUrl = `${fallbackBase}/stream/${encodeURIComponent(firstCamera)}`;
+    const fallbackUrl = `${fallbackBase}/stream/${encodeURIComponent(selectedCamera)}`;
     setLiveStreamOverride(prev => (prev === fallbackUrl ? prev : fallbackUrl));
-  }, [firstCamera]);
+  }, [selectedCamera]);
+
+  const handleSelectCamera = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
+    setSelectedCamera(event.target.value);
+  }, []);
 
   useEffect(() => {
     if (!liveExpanded || typeof document === 'undefined') return;
@@ -52,14 +69,35 @@ export const LiveStreamViewer = ({ cameras, normalizedApiBase }: LiveStreamViewe
     };
   }, [liveExpanded]);
 
-  if (!firstCamera) {
+  if (!selectedCamera) {
     return <p style={{ margin: 0 }}>Камеры не настроены. Добавьте RTSP в <code>.env</code>.</p>;
   }
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-        <h4 style={{ margin: '4px 0 12px' }}>Живой просмотр — {firstCamera}</h4>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <h4 style={{ margin: '4px 0 0' }}>Живой просмотр</h4>
+          <label style={{ fontSize: 14, color: '#334155', display: 'flex', gap: 8, alignItems: 'center' }}>
+            Камера:
+            <select
+              value={selectedCamera ?? ''}
+              onChange={handleSelectCamera}
+              style={{
+                padding: '4px 8px',
+                borderRadius: 6,
+                border: '1px solid #cbd5f5',
+                backgroundColor: '#fff',
+              }}
+            >
+              {cameras.map(camera => (
+                <option key={camera.name} value={camera.name}>
+                  {camera.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
         <button
           onClick={() => setLiveExpanded(true)}
           style={{
