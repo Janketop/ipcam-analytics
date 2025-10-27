@@ -56,6 +56,14 @@ const normalizeNumber = (value: unknown): number | undefined => {
   return undefined;
 };
 
+const getEventTimestamp = (event: EventItem): number => {
+  const ts = Date.parse(event.start_ts);
+  return Number.isNaN(ts) ? 0 : ts;
+};
+
+const sortEventsDesc = (items: EventItem[]): EventItem[] =>
+  [...items].sort((a, b) => getEventTimestamp(b) - getEventTimestamp(a));
+
 const formatPoseConfidence = (meta?: EventMeta) => {
   const raw =
     normalizeNumber(meta?.pose_confidence) ?? normalizeNumber((meta as Record<string, unknown> | undefined)?.poseConfidence);
@@ -114,8 +122,12 @@ const EventsPage = () => {
     const load = async () => {
       try {
         const response = await fetch(`${normalizedApiBase}/events`);
+        if (!response.ok) {
+          throw new Error(`Статус ответа ${response.status}`);
+        }
         const data = await response.json();
-        setEvents(Array.isArray(data?.events) ? data.events : []);
+        const rawEvents = Array.isArray(data?.events) ? (data.events as EventItem[]) : [];
+        setEvents(sortEventsDesc(rawEvents).slice(0, 200));
       } catch (err) {
         console.error('Не удалось получить события:', err);
       }
@@ -145,7 +157,7 @@ const EventsPage = () => {
             ? prev.filter(event => event.id !== nextEvent.id)
             : prev.filter(event => event.start_ts !== nextEvent.start_ts);
 
-          return [nextEvent, ...deduped].slice(0, 200);
+          return sortEventsDesc([nextEvent, ...deduped]).slice(0, 200);
         });
       } catch (err) {
         console.error('Не удалось обработать событие по WebSocket:', err);
