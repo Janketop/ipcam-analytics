@@ -5,7 +5,8 @@ from datetime import datetime
 from typing import Optional
 from uuid import uuid4
 import os
-import shutil
+
+from shutil import copy2
 
 import cv2
 
@@ -54,10 +55,16 @@ def save_snapshot(img_bgr, ts: datetime, camera_name: str, event_type: str = "ev
         logger.info("Снимок сохранён: %s", path)
         dataset_path = DATASET_PHONE_USAGE_DIR / filename
         try:
-            shutil.copy2(path, dataset_path)
-            logger.debug("Снимок продублирован в датасет: %s", dataset_path)
+            copy2(path, dataset_path)
         except Exception as exc:
-            logger.warning("Не удалось скопировать снимок %s в датасет: %s", filename, exc)
+            logger.warning(
+                "Не удалось скопировать снимок %s в датасет по пути %s: %s",
+                filename,
+                dataset_path,
+                exc,
+            )
+        else:
+            logger.debug("Снимок продублирован в датасет: %s", dataset_path)
     else:
         logger.warning("Не удалось сохранить снимок %s", path)
     return f"/static/snaps/{filename}"
