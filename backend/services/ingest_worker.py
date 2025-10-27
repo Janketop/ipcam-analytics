@@ -18,7 +18,7 @@ from backend.models import Event, FaceSample
 
 from backend.services.activity_detector import ActivityDetector
 from backend.services.ai_detector import AIDetector
-from backend.services.snapshots import save_snapshot
+from backend.services.snapshots import prepare_snapshot, save_snapshot
 
 
 def _normalize_meta_number(value: object) -> float | None:
@@ -45,7 +45,7 @@ class IngestWorker(Thread):
         cam_id: int,
         name: str,
         rtsp_url: str,
-        face_blur: bool = True,
+        face_blur: bool = False,
         broadcaster: Optional[Callable[[dict], Awaitable[None]]] = None,
         status_broadcaster: Optional[Callable[[dict], Awaitable[None]]] = None,
         main_loop: Optional[asyncio.AbstractEventLoop] = None,
@@ -83,6 +83,9 @@ class IngestWorker(Thread):
         self.last_frame_at: Optional[datetime] = None
         self.frame_durations: deque[float] = deque(maxlen=120)
         self._last_frame_monotonic: Optional[float] = None
+        self.snapshot_candidates: deque[tuple[object, float]] = deque(
+            maxlen=settings.snapshot_focus_buffer_size
+        )
 
         self.broadcaster = broadcaster
         self.status_broadcaster = status_broadcaster
@@ -164,6 +167,29 @@ class IngestWorker(Thread):
                 )
 
         future.add_done_callback(_finalize)
+
+    def _measure_sharpness(self, frame) -> float:
+        if frame is None:
+            return 0.0
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            variance = cv2.Laplacian(gray, cv2.CV_64F).var()
+            return float(variance)
+        except Exception:
+            logger.debug("[%s] Не удалось оценить резкость кадра", self.name, exc_info=True)
+            return 0.0
+
+    def _push_snapshot_candidate(self, frame) -> None:
+        if frame is None:
+            return
+        sharpness = self._measure_sharpness(frame)
+        self.snapshot_candidates.append((frame.copy(), sharpness))
+
+    def _select_best_snapshot_candidate(self):
+        if not self.snapshot_candidates:
+            return None
+        best_frame, _ = max(self.snapshot_candidates, key=lambda item: item[1])
+        return best_frame
 
     def _determine_status(self, now: datetime, runtime: dict) -> str:
         if self.stop_flag:
@@ -360,6 +386,7 @@ class IngestWorker(Thread):
                         continue
                     frame = latest_frame
 
+                self._push_snapshot_candidate(frame)
                 (
                     phone_usage_raw,
                     conf_raw,
@@ -368,6 +395,13 @@ class IngestWorker(Thread):
                     car_events,
                     people,
                 ) = self.detector.process_frame(frame)
+                best_snapshot_frame = self._select_best_snapshot_candidate()
+                if best_snapshot_frame is not None:
+                    snapshot_img = prepare_snapshot(
+                        best_snapshot_frame,
+                        self.detector.face_blur,
+                        self.detector.face_cascade,
+                    )
 
                 frame_processed_monotonic = time.monotonic()
                 if self._last_frame_monotonic is not None:
@@ -506,18 +540,20 @@ class IngestWorker(Thread):
                                     captured_at=ts,
                                 )
                                 session.add(sample)
-                            persisted_events.append(
-                                {
-                                    "id": event.id,
-                                    "camera": self.name,
-                                    "type": payload["type"],
-                                    "start_ts": event.start_ts,
-                                    "confidence": payload["confidence"],
-                                    "snapshot_url": snap_url,
-                                    "meta": meta,
-                                }
-                            )
+                        persisted_events.append(
+                            {
+                                "id": event.id,
+                                "camera": self.name,
+                                "type": payload["type"],
+                                "start_ts": event.start_ts,
+                                "confidence": payload["confidence"],
+                                "snapshot_url": snap_url,
+                                "meta": meta,
+                            }
+                        )
                         session.commit()
+                    if self.snapshot_candidates:
+                        self.snapshot_candidates.clear()
                 for stored in persisted_events:
                     logger.info(
                         "[%s] Зафиксировано событие %s (уверенность %.2f, данные %s)",
