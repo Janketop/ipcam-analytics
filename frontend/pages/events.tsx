@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ActivityChart from '../components/ActivityChart';
 import Layout from '../components/Layout';
 import { useApiBase } from '../hooks/useApiBase';
-import { EventItem, EventMeta } from '../types/api';
+import type { Camera, EventItem, EventMeta } from '../types/api';
 
 type WsEventPayload = {
   id?: number;
@@ -29,6 +29,32 @@ const mapWsEventPayload = (payload: WsEventPayload | null): EventItem | null => 
     camera: payload.camera,
     meta: payload.meta,
   };
+};
+
+const MAX_EVENTS = 200;
+
+const convertLocalInputToIso = (value: string): string | null => {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return parsed.toISOString();
+};
+
+const parseIsoTimestamp = (iso: string | null): number | undefined => {
+  if (!iso) return undefined;
+  const timestamp = Date.parse(iso);
+  return Number.isNaN(timestamp) ? undefined : timestamp;
+};
+
+const formatActiveDateTime = (iso: string | null): string | null => {
+  if (!iso) return null;
+  const timestamp = Date.parse(iso);
+  if (Number.isNaN(timestamp)) {
+    return null;
+  }
+  return new Date(timestamp).toLocaleString();
 };
 
 const formatPlate = (meta?: EventMeta) => {
@@ -117,30 +143,193 @@ const formatIdleDuration = (meta?: EventMeta) => {
 const EventsPage = () => {
   const { apiBase, normalizedApiBase, buildAbsoluteUrl } = useApiBase();
   const [events, setEvents] = useState<EventItem[]>([]);
+  const [cameras, setCameras] = useState<Camera[]>([]);
+  const [knownTypes, setKnownTypes] = useState<string[]>([]);
+  const [filterState, setFilterState] = useState({ camera: '', type: '', from: '', to: '' });
+  const [isLoading, setIsLoading] = useState(false);
+  const [filterError, setFilterError] = useState<string | null>(null);
+
+  const normalizedFilters = useMemo(() => {
+    const fromIso = convertLocalInputToIso(filterState.from);
+    const toIso = convertLocalInputToIso(filterState.to);
+    return {
+      camera: filterState.camera || undefined,
+      type: filterState.type || undefined,
+      fromIso,
+      toIso,
+      fromTimestamp: parseIsoTimestamp(fromIso),
+      toTimestamp: parseIsoTimestamp(toIso),
+    };
+  }, [filterState]);
+
+  const filtersSnapshotRef = useRef<{
+    camera?: string;
+    type?: string;
+    fromTimestamp?: number;
+    toTimestamp?: number;
+  }>({});
 
   useEffect(() => {
-    const load = async () => {
+    filtersSnapshotRef.current = {
+      camera: normalizedFilters.camera,
+      type: normalizedFilters.type,
+      fromTimestamp: normalizedFilters.fromTimestamp,
+      toTimestamp: normalizedFilters.toTimestamp,
+    };
+  }, [normalizedFilters.camera, normalizedFilters.type, normalizedFilters.fromTimestamp, normalizedFilters.toTimestamp]);
+
+  const updateKnownTypes = useCallback((items: EventItem[]) => {
+    setKnownTypes(prev => {
+      const next = new Set(prev);
+      items.forEach(item => {
+        if (item.type) {
+          next.add(item.type);
+        }
+      });
+      return Array.from(next).sort((a, b) => a.localeCompare(b, 'ru-RU'));
+    });
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    const loadCameras = async () => {
       try {
-        const response = await fetch(`${normalizedApiBase}/events`);
+        const response = await fetch(`${normalizedApiBase}/cameras`, { signal: controller.signal });
         if (!response.ok) {
           throw new Error(`Статус ответа ${response.status}`);
         }
         const data = await response.json();
-        const rawEvents = Array.isArray(data?.events) ? (data.events as EventItem[]) : [];
-        setEvents(sortEventsDesc(rawEvents).slice(0, 200));
+        const items = Array.isArray(data?.cameras) ? (data.cameras as Camera[]) : [];
+        setCameras(items);
       } catch (err) {
-        console.error('Не удалось получить события:', err);
+        if ((err as Error)?.name === 'AbortError') {
+          return;
+        }
+        console.error('Не удалось получить список камер:', err);
       }
     };
 
-    load();
+    loadCameras();
+
+    return () => {
+      controller.abort();
+    };
   }, [normalizedApiBase]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    const loadEvents = async () => {
+      if (
+        normalizedFilters.fromTimestamp !== undefined &&
+        normalizedFilters.toTimestamp !== undefined &&
+        normalizedFilters.fromTimestamp > normalizedFilters.toTimestamp
+      ) {
+        setFilterError('Дата начала не может быть позже даты окончания.');
+        setIsLoading(false);
+        return;
+      }
+
+      setFilterError(null);
+      setIsLoading(true);
+
+      try {
+        const params = new URLSearchParams({ limit: String(MAX_EVENTS) });
+        if (normalizedFilters.type) params.set('type', normalizedFilters.type);
+        if (normalizedFilters.camera) params.set('camera', normalizedFilters.camera);
+        if (normalizedFilters.fromIso) params.set('from_ts', normalizedFilters.fromIso);
+        if (normalizedFilters.toIso) params.set('to_ts', normalizedFilters.toIso);
+
+        const response = await fetch(`${normalizedApiBase}/events?${params.toString()}`, {
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          let errorDetail = `Статус ответа ${response.status}`;
+          try {
+            const errorPayload = await response.json();
+            if (typeof errorPayload?.detail === 'string') {
+              errorDetail = errorPayload.detail;
+            }
+          } catch {
+            // игнорируем ошибку парсинга
+          }
+          throw new Error(errorDetail);
+        }
+        const data = await response.json();
+        const rawEvents = Array.isArray(data?.events) ? (data.events as EventItem[]) : [];
+        updateKnownTypes(rawEvents);
+        setEvents(sortEventsDesc(rawEvents).slice(0, MAX_EVENTS));
+      } catch (err) {
+        if ((err as Error)?.name === 'AbortError') {
+          return;
+        }
+        console.error('Не удалось получить события:', err);
+        setFilterError((err as Error)?.message || 'Не удалось получить события.');
+      } finally {
+        if (!controller.signal.aborted) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    loadEvents();
+
+    return () => {
+      controller.abort();
+    };
+  }, [
+    normalizedApiBase,
+    normalizedFilters.camera,
+    normalizedFilters.type,
+    normalizedFilters.fromIso,
+    normalizedFilters.toIso,
+    normalizedFilters.fromTimestamp,
+    normalizedFilters.toTimestamp,
+    updateKnownTypes,
+  ]);
+
+  const matchesCurrentFilters = useCallback((event: EventItem) => {
+    const snapshot = filtersSnapshotRef.current;
+    if (!snapshot) return true;
+
+    if (snapshot.camera && event.camera !== snapshot.camera) {
+      return false;
+    }
+    if (snapshot.type && event.type !== snapshot.type) {
+      return false;
+    }
+
+    const eventTimestamp = Date.parse(event.start_ts);
+    if (!Number.isNaN(eventTimestamp)) {
+      if (snapshot.fromTimestamp !== undefined && eventTimestamp < snapshot.fromTimestamp) {
+        return false;
+      }
+      if (snapshot.toTimestamp !== undefined && eventTimestamp > snapshot.toTimestamp) {
+        return false;
+      }
+    }
+
+    return true;
+  }, []);
+
+  const wsQuery = useMemo(() => {
+    const params = new URLSearchParams();
+    if (normalizedFilters.type) params.set('type', normalizedFilters.type);
+    if (normalizedFilters.camera) params.set('camera', normalizedFilters.camera);
+    if (normalizedFilters.fromIso) params.set('from_ts', normalizedFilters.fromIso);
+    if (normalizedFilters.toIso) params.set('to_ts', normalizedFilters.toIso);
+    return params.toString();
+  }, [normalizedFilters.camera, normalizedFilters.type, normalizedFilters.fromIso, normalizedFilters.toIso]);
 
   useEffect(() => {
     const base = apiBase;
     if (!base) return;
 
     const wsUrl = new URL('/ws/events', `${base}/`);
+    if (wsQuery) {
+      wsUrl.search = wsQuery;
+    }
     wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:';
 
     const ws = new WebSocket(wsUrl.toString());
@@ -152,12 +341,17 @@ const EventsPage = () => {
           return;
         }
 
+        updateKnownTypes([nextEvent]);
+        if (!matchesCurrentFilters(nextEvent)) {
+          return;
+        }
+
         setEvents(prev => {
           const deduped = nextEvent.id != null
             ? prev.filter(event => event.id !== nextEvent.id)
             : prev.filter(event => event.start_ts !== nextEvent.start_ts);
-
-          return sortEventsDesc([nextEvent, ...deduped]).slice(0, 200);
+          const merged = [nextEvent, ...deduped].filter(matchesCurrentFilters);
+          return sortEventsDesc(merged).slice(0, MAX_EVENTS);
         });
       } catch (err) {
         console.error('Не удалось обработать событие по WebSocket:', err);
@@ -167,7 +361,47 @@ const EventsPage = () => {
     return () => {
       ws.close();
     };
-  }, [apiBase]);
+  }, [apiBase, wsQuery, matchesCurrentFilters, updateKnownTypes]);
+
+  const cameraOptions = useMemo(() => {
+    const names = new Set<string>();
+    cameras.forEach(camera => {
+      if (camera?.name) {
+        names.add(camera.name);
+      }
+    });
+    if (filterState.camera) {
+      names.add(filterState.camera);
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b, 'ru-RU'));
+  }, [cameras, filterState.camera]);
+
+  const typeOptions = useMemo(() => {
+    const types = new Set<string>(knownTypes);
+    if (filterState.type) {
+      types.add(filterState.type);
+    }
+    return Array.from(types).sort((a, b) => a.localeCompare(b, 'ru-RU'));
+  }, [knownTypes, filterState.type]);
+
+  const activeFilters = useMemo(() => {
+    const result: string[] = [];
+    if (normalizedFilters.camera) {
+      result.push(`Камера: ${normalizedFilters.camera}`);
+    }
+    if (normalizedFilters.type) {
+      result.push(`Тип: ${normalizedFilters.type}`);
+    }
+    const fromDisplay = formatActiveDateTime(normalizedFilters.fromIso);
+    if (fromDisplay) {
+      result.push(`С: ${fromDisplay}`);
+    }
+    const toDisplay = formatActiveDateTime(normalizedFilters.toIso);
+    if (toDisplay) {
+      result.push(`По: ${toDisplay}`);
+    }
+    return result;
+  }, [normalizedFilters.camera, normalizedFilters.type, normalizedFilters.fromIso, normalizedFilters.toIso]);
 
   const rows = useMemo(
     () =>
@@ -204,12 +438,139 @@ const EventsPage = () => {
     [events, buildAbsoluteUrl]
   );
 
+  const resetFilters = () => {
+    setFilterState({ camera: '', type: '', from: '', to: '' });
+    setFilterError(null);
+  };
+
   return (
     <Layout title="IP-CAM Analytics — События">
       <h1>Лента событий</h1>
       <p style={{ maxWidth: 640, color: '#475569' }}>
         Здесь отображаются последние детекции с камер видеонаблюдения. Новые события прилетают в режиме реального времени.
       </p>
+
+      <section style={{ marginBottom: 24 }}>
+        <div
+          style={{
+            background: '#fff',
+            border: '1px solid #e2e8f0',
+            borderRadius: 12,
+            padding: 16,
+            boxShadow: '0 8px 16px rgba(15,23,42,0.08)',
+          }}
+        >
+          <h2 style={{ marginTop: 0 }}>Фильтры событий</h2>
+          <p style={{ marginTop: 0, maxWidth: 560, color: '#475569' }}>
+            Выберите интересующие параметры, чтобы сузить список событий и обновить график активности.
+          </p>
+          <div
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 16,
+              alignItems: 'flex-end',
+              marginBottom: 12,
+            }}
+          >
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 220 }}>
+              <span style={{ fontSize: 13, color: '#475569' }}>Камера</span>
+              <select
+                value={filterState.camera}
+                onChange={event => setFilterState(prev => ({ ...prev, camera: event.target.value }))}
+                style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #cbd5f5', fontSize: 14 }}
+              >
+                <option value="">Все камеры</option>
+                {cameraOptions.map(name => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 220 }}>
+              <span style={{ fontSize: 13, color: '#475569' }}>Тип события</span>
+              <select
+                value={filterState.type}
+                onChange={event => setFilterState(prev => ({ ...prev, type: event.target.value }))}
+                style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #cbd5f5', fontSize: 14 }}
+              >
+                <option value="">Все типы</option>
+                {typeOptions.map(type => (
+                  <option key={type} value={type}>
+                    {type}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <span style={{ fontSize: 13, color: '#475569' }}>С (дата и время)</span>
+              <input
+                type="datetime-local"
+                value={filterState.from}
+                onChange={event => setFilterState(prev => ({ ...prev, from: event.target.value }))}
+                style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #cbd5f5', fontSize: 14 }}
+              />
+            </label>
+
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <span style={{ fontSize: 13, color: '#475569' }}>По (дата и время)</span>
+              <input
+                type="datetime-local"
+                value={filterState.to}
+                onChange={event => setFilterState(prev => ({ ...prev, to: event.target.value }))}
+                style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #cbd5f5', fontSize: 14 }}
+              />
+            </label>
+
+            <button
+              type="button"
+              onClick={resetFilters}
+              style={{
+                padding: '10px 16px',
+                borderRadius: 8,
+                border: '1px solid #e2e8f0',
+                background: '#f1f5f9',
+                color: '#1e293b',
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              Сбросить фильтры
+            </button>
+          </div>
+
+          {filterError && (
+            <div style={{ color: '#dc2626', marginBottom: 12, fontSize: 14 }}>{filterError}</div>
+          )}
+
+          {activeFilters.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 4 }}>
+              {activeFilters.map(label => (
+                <span
+                  key={label}
+                  style={{
+                    background: '#e0f2fe',
+                    color: '#0369a1',
+                    borderRadius: 999,
+                    padding: '4px 10px',
+                    fontSize: 13,
+                    fontWeight: 600,
+                  }}
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+          )}
+
+          <div style={{ fontSize: 13, color: '#64748b' }}>
+            Показано {events.length} из {MAX_EVENTS} последних событий.
+          </div>
+        </div>
+      </section>
 
       <section style={{ marginBottom: 24 }}>
         <div
@@ -248,7 +609,14 @@ const EventsPage = () => {
           </thead>
           <tbody>
             {rows}
-            {events.length === 0 && (
+            {isLoading && events.length === 0 && (
+              <tr>
+                <td colSpan={10} style={{ padding: 16, textAlign: 'center', color: '#64748b' }}>
+                  Загружаем события...
+                </td>
+              </tr>
+            )}
+            {!isLoading && events.length === 0 && (
               <tr>
                 <td colSpan={10} style={{ padding: 16, textAlign: 'center', color: '#64748b' }}>
                   Пока нет зафиксированных событий.
