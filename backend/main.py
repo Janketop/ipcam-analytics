@@ -77,7 +77,12 @@ async def lifespan(app: FastAPI):
     # Первый запуск очистки делаем вручную, чтобы не ждать таймер
     async with app.state.cleanup_lock:
         logger.info("Запускаю первичную очистку устаревших данных")
-        await perform_cleanup(session_factory, app.state.retention_days, app.state.cleanup_state)
+        await perform_cleanup(
+            session_factory,
+            app.state.retention_days,
+            app.state.cleanup_state,
+            app.state.face_sample_unverified_retention_days,
+        )
         logger.info("Первичная очистка завершена")
 
     task = asyncio.create_task(
