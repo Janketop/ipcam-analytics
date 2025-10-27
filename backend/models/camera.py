@@ -4,9 +4,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Text, text
+from sqlalchemy import Boolean, DateTime, Integer, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from backend.core.config import settings
 from backend.models.base import Base
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -30,6 +31,12 @@ class Camera(Base):
     )
     capture_entry_time: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("true")
+    )
+    idle_alert_time: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text(str(settings.idle_alert_time)),
+        default=settings.idle_alert_time,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")

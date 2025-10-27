@@ -4,6 +4,9 @@ import { useApiBase } from '../hooks/useApiBase';
 import { useCameras } from '../hooks/useCameras';
 import type { CameraStatus } from '../types/api';
 
+const DEFAULT_IDLE_ALERT_TIME = 300;
+const MAX_IDLE_ALERT_TIME = 86400;
+
 const CamerasPage = () => {
   const { normalizedApiBase } = useApiBase();
   const { cameras, setCameras, loading, error: loadError, reload } = useCameras(normalizedApiBase);
@@ -18,6 +21,7 @@ const CamerasPage = () => {
   const [detectCarEnabled, setDetectCarEnabled] = useState(true);
   const [captureEntryTimeEnabled, setCaptureEntryTimeEnabled] = useState(true);
   const [editingCameraId, setEditingCameraId] = useState<number | null>(null);
+  const [idleAlertTime, setIdleAlertTime] = useState<string>(String(DEFAULT_IDLE_ALERT_TIME));
 
   const resetFormFields = useCallback(() => {
     setNewCameraName('');
@@ -26,6 +30,7 @@ const CamerasPage = () => {
     setDetectCarEnabled(true);
     setCaptureEntryTimeEnabled(true);
     setEditingCameraId(null);
+    setIdleAlertTime(String(DEFAULT_IDLE_ALERT_TIME));
   }, []);
 
   const toggleForm = useCallback(() => {
@@ -43,9 +48,28 @@ const CamerasPage = () => {
 
     const name = newCameraName.trim();
     const url = newCameraUrl.trim();
+    const idleSeconds = Number.parseInt(idleAlertTime.trim(), 10);
 
     if (!name || !url) {
       setFormError('Введите название и RTSP-адрес камеры.');
+      setFormSuccess(null);
+      return;
+    }
+
+    if (Number.isNaN(idleSeconds)) {
+      setFormError('Укажите время простоя в секундах.');
+      setFormSuccess(null);
+      return;
+    }
+
+    if (idleSeconds < 10) {
+      setFormError('Порог простоя не может быть меньше 10 секунд.');
+      setFormSuccess(null);
+      return;
+    }
+
+    if (idleSeconds > MAX_IDLE_ALERT_TIME) {
+      setFormError('Порог простоя не должен превышать 24 часов (86400 секунд).');
       setFormSuccess(null);
       return;
     }
@@ -70,6 +94,7 @@ const CamerasPage = () => {
           detect_person: detectPersonEnabled,
           detect_car: detectCarEnabled,
           capture_entry_time: captureEntryTimeEnabled,
+          idle_alert_time: idleSeconds,
         }),
       });
 
@@ -120,6 +145,12 @@ const CamerasPage = () => {
           : typeof created.capture_entry_time === 'boolean'
             ? created.capture_entry_time
             : true;
+      const idleAlert =
+        typeof created.idleAlertTime === 'number'
+          ? created.idleAlertTime
+          : typeof created.idle_alert_time === 'number'
+            ? created.idle_alert_time
+            : idleSeconds;
 
       setCameras(prev => {
         if (editingCameraId != null) {
@@ -132,6 +163,7 @@ const CamerasPage = () => {
                   detectPerson,
                   detectCar,
                   captureEntryTime,
+                  idleAlertTime: idleAlert,
                 }
               : camera,
           );
@@ -146,6 +178,7 @@ const CamerasPage = () => {
             detectPerson,
             detectCar,
             captureEntryTime,
+            idleAlertTime: idleAlert,
             status: 'starting' as CameraStatus,
             fps: null,
             lastFrameTs: null,
@@ -170,6 +203,7 @@ const CamerasPage = () => {
   }, [
     newCameraName,
     newCameraUrl,
+    idleAlertTime,
     detectPersonEnabled,
     detectCarEnabled,
     captureEntryTimeEnabled,
@@ -194,6 +228,7 @@ const CamerasPage = () => {
       setDetectPersonEnabled(Boolean(target.detectPerson));
       setDetectCarEnabled(Boolean(target.detectCar));
       setCaptureEntryTimeEnabled(Boolean(target.captureEntryTime));
+      setIdleAlertTime(String(target.idleAlertTime ?? DEFAULT_IDLE_ALERT_TIME));
       setIsFormOpen(true);
     },
     [cameras],
@@ -379,6 +414,51 @@ const CamerasPage = () => {
     );
   };
 
+  const formatIdleThreshold = (seconds: number): string => {
+    if (seconds < 60) {
+      return `${seconds} с`;
+    }
+    if (seconds % 3600 === 0) {
+      return `${Math.floor(seconds / 3600)} ч`;
+    }
+    if (seconds >= 3600) {
+      const hours = Math.floor(seconds / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      const hoursPart = hours ? `${hours} ч` : '';
+      const minutesPart = minutes ? ` ${minutes} мин` : '';
+      return `${hoursPart}${minutesPart}`.trim();
+    }
+    if (seconds % 60 === 0) {
+      return `${Math.floor(seconds / 60)} мин`;
+    }
+    return `${(seconds / 60).toFixed(1)} мин`;
+  };
+
+  const renderIdleThresholdChip = (seconds?: number) => {
+    if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
+      return null;
+    }
+    return (
+      <span
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '4px 8px',
+          borderRadius: 999,
+          border: '1px solid #ddd6fe',
+          background: '#ede9fe',
+          color: '#5b21b6',
+          fontWeight: 600,
+          fontSize: 12,
+          letterSpacing: 0.4,
+        }}
+      >
+        Порог простоя: {formatIdleThreshold(seconds)}
+      </span>
+    );
+  };
+
   return (
     <Layout title="IP-CAM Analytics — Камеры">
       <h1>Управление камерами</h1>
@@ -470,6 +550,27 @@ const CamerasPage = () => {
                 setFormSuccess(null);
               }}
               placeholder="rtsp://user:pass@host/stream"
+              style={{
+                padding: '8px 10px',
+                borderRadius: 6,
+                border: '1px solid #cbd5f5',
+                fontSize: 14,
+              }}
+            />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span style={{ fontSize: 14, color: '#0f172a', fontWeight: 600 }}>Порог простоя, сек</span>
+            <input
+              type="number"
+              min={10}
+              max={MAX_IDLE_ALERT_TIME}
+              value={idleAlertTime}
+              onChange={event => {
+                setIdleAlertTime(event.target.value.replace(/[^0-9]/g, ''));
+                setFormError(null);
+                setFormSuccess(null);
+              }}
+              placeholder={`Например, ${DEFAULT_IDLE_ALERT_TIME}`}
               style={{
                 padding: '8px 10px',
                 borderRadius: 6,
@@ -764,6 +865,7 @@ const CamerasPage = () => {
                           {renderFeatureChip('Телефоны', Boolean(camera.detectPerson))}
                           {renderFeatureChip('Авто', Boolean(camera.detectCar))}
                           {renderFeatureChip('Время въезда', Boolean(camera.captureEntryTime))}
+                          {renderIdleThresholdChip(camera.idleAlertTime)}
                         </div>
                       </td>
                       <td style={{ padding: '14px 16px', textAlign: 'center' }}>{renderStatusBadge(camera.status)}</td>

@@ -35,6 +35,7 @@ export type Camera = {
   detectPerson: boolean;
   detectCar: boolean;
   captureEntryTime: boolean;
+  idleAlertTime: number;
   status?: CameraStatus;
   fps?: number | null;
   lastFrameTs?: string | null;
