@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Chart, BarController, BarElement, CategoryScale, LinearScale, Tooltip, Legend } from 'chart.js';
 Chart.register(BarController, BarElement, CategoryScale, LinearScale, Tooltip, Legend);
 
@@ -321,6 +321,12 @@ export default function Home() {
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [liveExpanded, setLiveExpanded] = useState(false);
+  const [newCameraName, setNewCameraName] = useState('');
+  const [newCameraUrl, setNewCameraUrl] = useState('');
+  const [cameraFormError, setCameraFormError] = useState<string | null>(null);
+  const [cameraFormSuccess, setCameraFormSuccess] = useState<string | null>(null);
+  const [isAddingCamera, setIsAddingCamera] = useState(false);
+  const [removingCameraId, setRemovingCameraId] = useState<number | null>(null);
 
   const resolveApiBase = useCallback(() => {
     const envBase = process.env.NEXT_PUBLIC_API_BASE;
@@ -524,10 +530,300 @@ export default function Home() {
     };
   }, [liveExpanded]);
 
+  const handleAddCamera = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+
+      const name = newCameraName.trim();
+      const url = newCameraUrl.trim();
+
+      if (!name || !url) {
+        setCameraFormError('Введите название и RTSP-адрес камеры.');
+        setCameraFormSuccess(null);
+        return;
+      }
+
+      setIsAddingCamera(true);
+      setCameraFormError(null);
+      setCameraFormSuccess(null);
+
+      try {
+        const response = await fetch(`${normalizedApiBase}/api/cameras/add`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            name,
+            rtsp_url: url,
+          }),
+        });
+
+        if (!response.ok) {
+          let detail = 'Не удалось добавить камеру.';
+          try {
+            const data = await response.json();
+            if (data?.detail) {
+              detail = data.detail;
+            }
+          } catch (error) {
+            const text = await response.text();
+            if (text && text.trim()) {
+              detail = text.trim();
+            }
+          }
+          throw new Error(detail);
+        }
+
+        const data = await response.json();
+        const created = data?.camera;
+        if (!created?.id || !created?.name) {
+          throw new Error('Сервер вернул неожиданный ответ.');
+        }
+
+        setCameras(prev => {
+          const next = [...prev, { id: created.id as number, name: String(created.name) }];
+          return next.sort((a, b) => a.id - b.id);
+        });
+        setNewCameraName('');
+        setNewCameraUrl('');
+        setLiveStreamOverride(null);
+        setCameraFormSuccess(`Камера «${created.name}» успешно добавлена.`);
+      } catch (error) {
+        setCameraFormError(
+          error instanceof Error ? error.message : 'Произошла неизвестная ошибка при добавлении камеры.'
+        );
+      } finally {
+        setIsAddingCamera(false);
+      }
+    },
+    [newCameraName, newCameraUrl, normalizedApiBase]
+  );
+
+  const handleDeleteCamera = useCallback(
+    async (cameraId: number, cameraName: string) => {
+      if (typeof window !== 'undefined') {
+        const confirmed = window.confirm(`Удалить камеру «${cameraName}»?`);
+        if (!confirmed) {
+          return;
+        }
+      }
+
+      setRemovingCameraId(cameraId);
+      setCameraFormError(null);
+      setCameraFormSuccess(null);
+
+      try {
+        const response = await fetch(`${normalizedApiBase}/api/cameras/${cameraId}`, {
+          method: 'DELETE',
+        });
+
+        if (!response.ok) {
+          let detail = 'Не удалось удалить камеру.';
+          try {
+            const data = await response.json();
+            if (data?.detail) {
+              detail = data.detail;
+            }
+          } catch (error) {
+            const text = await response.text();
+            if (text && text.trim()) {
+              detail = text.trim();
+            }
+          }
+          throw new Error(detail);
+        }
+
+        setCameras(prev => prev.filter(camera => camera.id !== cameraId));
+        setLiveStreamOverride(null);
+        setCameraFormSuccess(`Камера «${cameraName}» удалена.`);
+      } catch (error) {
+        setCameraFormError(
+          error instanceof Error ? error.message : 'Произошла неизвестная ошибка при удалении камеры.'
+        );
+      } finally {
+        setRemovingCameraId(null);
+      }
+    },
+    [normalizedApiBase]
+  );
+
   return (
     <main style={{ maxWidth: 1100, margin: '2rem auto', fontFamily: 'system-ui, sans-serif' }}>
       <h1>Аналитика IP-камер — События</h1>
       <p>Живые детекции будут появляться ниже. Приватность: лица размыты по умолчанию.</p>
+
+      <section
+        style={{
+          margin: '24px 0',
+          border: '1px solid #e2e8f0',
+          borderRadius: 12,
+          padding: 16,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 12,
+          background: '#fff',
+          boxShadow: '0 8px 16px rgba(15,23,42,0.08)',
+        }}
+      >
+        <h2 style={{ margin: 0 }}>Управление камерами</h2>
+        <p style={{ margin: '0 0 8px', color: '#475569', fontSize: 14 }}>
+          Добавьте новую RTSP-камеру или удалите неиспользуемую. Потоки запускаются и останавливаются автоматически.
+        </p>
+        <form
+          onSubmit={handleAddCamera}
+          style={{
+            display: 'grid',
+            gap: 12,
+            gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+            alignItems: 'end',
+          }}
+        >
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span style={{ fontSize: 14, color: '#0f172a', fontWeight: 600 }}>Название камеры</span>
+            <input
+              type="text"
+              value={newCameraName}
+              onChange={event => {
+                setNewCameraName(event.target.value);
+                if (cameraFormError) setCameraFormError(null);
+                setCameraFormSuccess(null);
+              }}
+              placeholder="Например, Въезд №1"
+              style={{
+                padding: '8px 10px',
+                borderRadius: 6,
+                border: '1px solid #cbd5f5',
+                fontSize: 14,
+              }}
+            />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span style={{ fontSize: 14, color: '#0f172a', fontWeight: 600 }}>RTSP URL</span>
+            <input
+              type="text"
+              value={newCameraUrl}
+              onChange={event => {
+                setNewCameraUrl(event.target.value);
+                if (cameraFormError) setCameraFormError(null);
+                setCameraFormSuccess(null);
+              }}
+              placeholder="rtsp://user:pass@host/stream"
+              style={{
+                padding: '8px 10px',
+                borderRadius: 6,
+                border: '1px solid #cbd5f5',
+                fontSize: 14,
+              }}
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={isAddingCamera}
+            style={{
+              padding: '10px 16px',
+              borderRadius: 8,
+              border: 'none',
+              background: isAddingCamera ? '#94a3b8' : '#2563eb',
+              color: '#fff',
+              cursor: isAddingCamera ? 'wait' : 'pointer',
+              fontWeight: 600,
+              minHeight: 40,
+            }}
+          >
+            {isAddingCamera ? 'Добавляем...' : 'Добавить камеру'}
+          </button>
+        </form>
+        {cameraFormError && (
+          <div
+            role="alert"
+            style={{
+              background: '#fee2e2',
+              border: '1px solid #fecaca',
+              color: '#b91c1c',
+              padding: '8px 12px',
+              borderRadius: 8,
+              fontSize: 14,
+            }}
+          >
+            {cameraFormError}
+          </div>
+        )}
+        {cameraFormSuccess && (
+          <div
+            style={{
+              background: '#dcfce7',
+              border: '1px solid #bbf7d0',
+              color: '#166534',
+              padding: '8px 12px',
+              borderRadius: 8,
+              fontSize: 14,
+            }}
+          >
+            {cameraFormSuccess}
+          </div>
+        )}
+        <div
+          style={{
+            borderTop: '1px solid #e2e8f0',
+            paddingTop: 12,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+          }}
+        >
+          <h3 style={{ margin: 0, fontSize: 16 }}>Активные камеры</h3>
+          {cameras.length === 0 ? (
+            <p style={{ margin: 0, color: '#475569', fontSize: 14 }}>
+              Пока нет активных камер. Добавьте поток, чтобы начать обработку.
+            </p>
+          ) : (
+            <ul
+              style={{
+                listStyle: 'none',
+                margin: 0,
+                padding: 0,
+                display: 'grid',
+                gap: 8,
+              }}
+            >
+              {cameras.map(camera => (
+                <li
+                  key={camera.id}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: 12,
+                    padding: '8px 12px',
+                    borderRadius: 8,
+                    border: '1px solid #e2e8f0',
+                    background: '#f8fafc',
+                  }}
+                >
+                  <span style={{ fontWeight: 600, color: '#0f172a' }}>{camera.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteCamera(camera.id, camera.name)}
+                    disabled={removingCameraId === camera.id}
+                    style={{
+                      padding: '6px 12px',
+                      borderRadius: 6,
+                      border: '1px solid #fca5a5',
+                      background: removingCameraId === camera.id ? '#fecaca' : '#fee2e2',
+                      color: '#b91c1c',
+                      cursor: removingCameraId === camera.id ? 'wait' : 'pointer',
+                      fontWeight: 600,
+                    }}
+                  >
+                    {removingCameraId === camera.id ? 'Удаляем…' : 'Удалить'}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
 
       <section style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:16}}>
         <div style={{border:'1px solid #ddd', borderRadius:8, padding:12}}>

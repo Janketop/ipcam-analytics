@@ -39,25 +39,16 @@ class IngestManager:
         face_blur = settings.face_blur
         logger.info("Найдено %d активных камер для запуска", len(cameras))
         for camera in cameras:
-            worker = IngestWorker(
-                self.session_factory,
-                camera.id,
-                camera.name,
-                camera.rtsp_url,
-                face_blur=face_blur,
-                broadcaster=self.broadcaster,
-                main_loop=self.main_loop,
-            )
-            worker.start()
-            self.workers.append(worker)
-            logger.info("Ingest-воркер для камеры '%s' (#%s) запущен", camera.name, camera.id)
+            self.start_worker_for_camera(camera, face_blur=face_blur)
 
     def stop_all(self) -> None:
         if not self.workers:
             logger.info("Нет активных ingest-воркеров для остановки")
-        for worker in self.workers:
-            worker.stop_flag = True
-            logger.info("Отправлен сигнал остановки ingest-воркеру '%s'", worker.name)
+            return
+
+        for worker in list(self.workers):
+            self.stop_worker_for_camera(worker.name)
+
         logger.info("Все ingest-воркеры получили сигнал остановки")
 
     def get_worker(self, name: str):
@@ -65,6 +56,65 @@ class IngestManager:
             if worker.name == name:
                 return worker
         return None
+
+    def start_worker_for_camera(self, camera: Camera, face_blur: bool | None = None) -> IngestWorker:
+        """Запускает ingest-воркер для переданной камеры."""
+
+        existing_worker = self.get_worker(camera.name)
+        if existing_worker:
+            logger.info(
+                "Ingest-воркер для камеры '%s' уже запущен, повторный запуск пропущен",
+                camera.name,
+            )
+            return existing_worker
+
+        if face_blur is None:
+            face_blur = settings.face_blur
+
+        worker = IngestWorker(
+            self.session_factory,
+            camera.id,
+            camera.name,
+            camera.rtsp_url,
+            face_blur=face_blur,
+            broadcaster=self.broadcaster,
+            main_loop=self.main_loop,
+        )
+        worker.start()
+        self.workers.append(worker)
+        logger.info(
+            "Ingest-воркер для камеры '%s' (#%s) запущен",
+            camera.name,
+            camera.id,
+        )
+        return worker
+
+    def stop_worker_for_camera(self, camera_name: str) -> bool:
+        """Останавливает ingest-воркер, связанный с указанной камерой."""
+
+        worker = self.get_worker(camera_name)
+        if not worker:
+            logger.info(
+                "Запрос на остановку ingest-воркера для '%s', но активный поток не найден",
+                camera_name,
+            )
+            return False
+
+        worker.stop_flag = True
+        logger.info("Отправлен сигнал остановки ingest-воркеру '%s'", worker.name)
+        worker.join(timeout=5.0)
+        if worker.is_alive():
+            logger.warning(
+                "Ingest-воркер '%s' не завершил работу в отведённое время",
+                worker.name,
+            )
+
+        try:
+            self.workers.remove(worker)
+        except ValueError:
+            pass
+
+        return True
 
     def runtime_status(self) -> dict:
         workers = [worker.runtime_status() for worker in self.workers]
