@@ -29,6 +29,19 @@ WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        pkg-config \
+        gfortran \
+        libopenblas-dev \
+        liblapack-dev \
+        libatlas-base-dev \
+        libboost-system-dev \
+        libboost-thread-dev \
+        libboost-python-dev \
+        libx11-dev \
+        libjpeg-dev \
+        libpng-dev \
         libglvnd0 \
         libgl1 \
         libgl1-mesa-dri \
