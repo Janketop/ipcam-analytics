@@ -1,5 +1,44 @@
 import { RuntimeInfo } from '../types/api';
 
+const formatDateTime = (value?: string | null) => {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString('ru-RU', {
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+};
+
+const formatDuration = (seconds?: number | null) => {
+  if (seconds == null || Number.isNaN(seconds)) {
+    return '—';
+  }
+  const total = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  const parts: string[] = [];
+  if (hours) parts.push(`${hours} ч`);
+  if (minutes || hours) parts.push(`${minutes} мин`);
+  parts.push(`${secs} с`);
+  return parts.join(' ');
+};
+
+const formatNumber = (value?: number | null, fractionDigits = 1) => {
+  if (value == null || Number.isNaN(value)) {
+    return '—';
+  }
+  return value.toFixed(fractionDigits);
+};
+
 type RuntimeStatusProps = {
   runtime: RuntimeInfo | null;
   error: string | null;
@@ -16,6 +55,29 @@ export const RuntimeStatus = ({ runtime, error }: RuntimeStatusProps) => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 14, color: '#0f172a' }}>
+      {runtime.summary && (
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 4,
+            padding: 8,
+            border: '1px solid #cbd5f5',
+            borderRadius: 8,
+            background: '#eef2ff',
+          }}
+        >
+          <div style={{ fontWeight: 600, color: '#312e81' }}>Сводка по воркерам</div>
+          <div>
+            Активно: {runtime.summary.alive_workers} из {runtime.summary.total_workers}
+          </div>
+          <div>Средний FPS: {formatNumber(runtime.summary.avg_fps)}</div>
+          <div>
+            Наибольший аптайм: {formatDuration(runtime.summary.max_uptime_seconds)}
+          </div>
+          <div>Самый свежий кадр: {formatDateTime(runtime.summary.latest_frame_at)}</div>
+        </div>
+      )}
       <div>
         <strong>PyTorch:</strong>{' '}
         {runtime.system.torch_available
@@ -84,6 +146,18 @@ export const RuntimeStatus = ({ runtime, error }: RuntimeStatusProps) => {
                     <strong>Ошибка модели:</strong> {worker.device_error}
                   </div>
                 )}
+                <div style={{ fontSize: 13, color: '#1e293b' }}>
+                  FPS (окно последних кадров): {formatNumber(worker.fps)}
+                </div>
+                <div style={{ fontSize: 13, color: '#1e293b' }}>
+                  Старт воркера: {formatDateTime(worker.started_at)}
+                </div>
+                <div style={{ fontSize: 13, color: '#1e293b' }}>
+                  Последний обработанный кадр: {formatDateTime(worker.last_frame_at)}
+                </div>
+                <div style={{ fontSize: 13, color: '#1e293b' }}>
+                  Аптайм: {formatDuration(worker.uptime_seconds)}
+                </div>
               </li>
             ))}
           </ul>
