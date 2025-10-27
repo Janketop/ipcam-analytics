@@ -27,10 +27,14 @@ class SelfTrainingService:
             if self._task and not self._task.done():
                 return False
 
-            loop = asyncio.get_running_loop()
-            task = loop.create_task(self._run_training(app), name="self-training")
+            task = asyncio.create_task(self._run_training(app), name="self-training")
             self._task = task
-            app.state.background_tasks.append(task)
+
+            background_tasks = getattr(app.state, "background_tasks", None)
+            if background_tasks is None:
+                background_tasks = []
+                app.state.background_tasks = background_tasks  # type: ignore[attr-defined]
+            background_tasks.append(task)
             return True
 
     async def _run_training(self, app: FastAPI) -> None:
@@ -47,9 +51,14 @@ class SelfTrainingService:
         finally:
             async with self._lock:
                 self._task = None
+            background_tasks = getattr(app.state, "background_tasks", None)
             current = asyncio.current_task()
-            if current is not None and current in app.state.background_tasks:
-                app.state.background_tasks.remove(current)  # type: ignore[arg-type]
+            if (
+                background_tasks is not None
+                and current is not None
+                and current in background_tasks
+            ):
+                background_tasks.remove(current)
 
     def is_running(self) -> bool:
         """Возвращает ``True``, если обучение ещё выполняется."""
