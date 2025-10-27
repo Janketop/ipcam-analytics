@@ -4,6 +4,24 @@ import { Camera, CameraStatus } from '../types/api';
 const DEFAULT_STATUS: CameraStatus = 'unknown';
 const KNOWN_STATUSES: CameraStatus[] = ['online', 'offline', 'starting', 'stopping', 'no_signal', 'unknown'];
 
+type FetchOptions = {
+  silent?: boolean;
+};
+
+type WsStatusPayload = {
+  cameraId?: unknown;
+  camera_id?: unknown;
+  id?: unknown;
+  camera?: unknown;
+  name?: unknown;
+  status?: unknown;
+  fps?: unknown;
+  lastFrameTs?: unknown;
+  last_frame_ts?: unknown;
+  uptimeSec?: unknown;
+  uptime_sec?: unknown;
+};
+
 const toNumberOrNull = (value: unknown): number | null => {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
@@ -15,6 +33,47 @@ const toNumberOrNull = (value: unknown): number | null => {
     }
   }
   return null;
+};
+
+const parseStatus = (value: unknown): CameraStatus | undefined => {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  return (KNOWN_STATUSES as readonly string[]).includes(value) ? (value as CameraStatus) : undefined;
+};
+
+const mapStatusPayload = (payload: WsStatusPayload | null | undefined) => {
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+
+  const cameraId = toNumberOrNull(payload.cameraId ?? payload.camera_id ?? payload.id);
+  const cameraName =
+    typeof payload.camera === 'string'
+      ? payload.camera
+      : typeof payload.name === 'string'
+        ? payload.name
+        : null;
+  const status = parseStatus(payload.status);
+  const fpsValue = payload.fps !== undefined ? toNumberOrNull(payload.fps) : undefined;
+  const uptimeValue = payload.uptimeSec !== undefined || payload.uptime_sec !== undefined
+    ? toNumberOrNull(payload.uptimeSec ?? payload.uptime_sec)
+    : undefined;
+  const lastFrameTs =
+    typeof payload.lastFrameTs === 'string'
+      ? payload.lastFrameTs
+      : typeof payload.last_frame_ts === 'string'
+        ? payload.last_frame_ts
+        : undefined;
+
+  return {
+    cameraId,
+    cameraName,
+    status,
+    fps: fpsValue,
+    uptimeSec: uptimeValue,
+    lastFrameTs,
+  } as const;
 };
 
 const normalizeCamera = (raw: unknown): Camera | null => {
@@ -52,9 +111,12 @@ export const useCameras = (apiBase: string) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchCameras = useCallback(async () => {
+  const fetchCameras = useCallback(async (options?: FetchOptions) => {
     if (!apiBase) return;
-    setLoading(true);
+    const silent = Boolean(options?.silent);
+    if (!silent) {
+      setLoading(true);
+    }
     setError(null);
     try {
       const response = await fetch(`${apiBase}/cameras`);
@@ -70,7 +132,9 @@ export const useCameras = (apiBase: string) => {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось получить список камер.');
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   }, [apiBase]);
 
@@ -78,5 +142,119 @@ export const useCameras = (apiBase: string) => {
     fetchCameras();
   }, [fetchCameras]);
 
-  return { cameras, setCameras, loading, error, reload: fetchCameras };
+  useEffect(() => {
+    if (!apiBase) return;
+
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let stopped = false;
+    let attempt = 0;
+
+    const scheduleReconnect = () => {
+      if (stopped) return;
+      const delay = Math.min(30000, 1000 * 2 ** attempt);
+      attempt += 1;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, delay);
+    };
+
+    const handleMessage = (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data) as WsStatusPayload;
+        const mapped = mapStatusPayload(data);
+        if (!mapped || (mapped.cameraId == null && !mapped.cameraName)) {
+          return;
+        }
+
+        setCameras(prev => {
+          let updated = false;
+          const next = prev.map(camera => {
+            const matchesId = mapped.cameraId != null && camera.id === mapped.cameraId;
+            const matchesName = mapped.cameraName && camera.name === mapped.cameraName;
+            if (!matchesId && !matchesName) {
+              return camera;
+            }
+
+            updated = true;
+            return {
+              ...camera,
+              status: mapped.status ?? camera.status ?? DEFAULT_STATUS,
+              fps: mapped.fps !== undefined ? mapped.fps : camera.fps ?? null,
+              uptimeSec: mapped.uptimeSec !== undefined ? mapped.uptimeSec : camera.uptimeSec ?? null,
+              lastFrameTs: mapped.lastFrameTs !== undefined ? mapped.lastFrameTs : camera.lastFrameTs ?? null,
+            };
+          });
+
+          if (updated) {
+            return next;
+          }
+
+          if (mapped.cameraId != null && mapped.cameraName) {
+            return [...prev, {
+              id: mapped.cameraId,
+              name: mapped.cameraName,
+              status: mapped.status ?? DEFAULT_STATUS,
+              fps: mapped.fps ?? null,
+              uptimeSec: mapped.uptimeSec ?? null,
+              lastFrameTs: mapped.lastFrameTs ?? null,
+            }].sort((a, b) => a.id - b.id);
+          }
+
+          return prev;
+        });
+      } catch (err) {
+        console.error('Не удалось обработать статус по WebSocket:', err);
+      }
+    };
+
+    const connect = () => {
+      if (stopped) return;
+
+      try {
+        const wsUrl = new URL('/ws/statuses', `${apiBase}/`);
+        wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+        ws = new WebSocket(wsUrl.toString());
+      } catch (err) {
+        console.error('Не удалось сформировать адрес WebSocket статусов:', err);
+        scheduleReconnect();
+        return;
+      }
+
+      ws.onopen = () => {
+        attempt = 0;
+        fetchCameras({ silent: true }).catch(err => {
+          console.error('Не удалось синхронизировать камеры после подключения WS:', err);
+        });
+      };
+
+      ws.onmessage = handleMessage;
+
+      ws.onclose = () => {
+        if (stopped) return;
+        scheduleReconnect();
+      };
+
+      ws.onerror = event => {
+        console.error('Ошибка WebSocket статусов камер:', event);
+        ws?.close();
+      };
+    };
+
+    const connectTimer = setTimeout(connect, 0);
+
+    return () => {
+      stopped = true;
+      if (connectTimer) {
+        clearTimeout(connectTimer);
+      }
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+      }
+      ws?.close();
+    };
+  }, [apiBase, fetchCameras]);
+
+  return { cameras, setCameras, loading, error, reload: () => fetchCameras() };
 };

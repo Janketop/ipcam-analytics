@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import AnyUrl, BaseModel, constr, validator
 from sqlalchemy.orm import Session
 
+from backend.core.config import settings
 from backend.core.dependencies import get_ingest_manager, get_session
 from backend.models import Camera
 
@@ -63,13 +64,13 @@ def _calc_status(worker, worker_info: Dict[str, Any] | None) -> str:
             last_frame_at = None
 
     if last_frame_at is None:
-        return "online"
+        return "starting"
 
     if last_frame_at.tzinfo is None:
         last_frame_at = last_frame_at.replace(tzinfo=timezone.utc)
 
     delta = datetime.now(timezone.utc) - last_frame_at.astimezone(timezone.utc)
-    if delta.total_seconds() > 30:
+    if delta.total_seconds() > settings.ingest_status_stale_threshold:
         return "no_signal"
 
     return "online"
