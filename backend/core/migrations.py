@@ -46,19 +46,18 @@ def run_startup_migrations(session_factory: SessionFactory) -> None:
             return
 
         statements = list(_add_missing_camera_flags(existing_columns))
-        if not statements:
+        if statements:
+            for statement in statements:
+                session.execute(text(statement))
+
+            session.commit()
+
+            logger.info(
+                "Добавлены отсутствующие флаги камер: %s",
+                ", ".join(stmt.split()[4] for stmt in statements),
+            )
+        else:
             logger.info("Миграции флагов камер не требуются — схема актуальна.")
-            return
-
-        for statement in statements:
-            session.execute(text(statement))
-
-        session.commit()
-
-        logger.info(
-            "Добавлены отсутствующие флаги камер: %s",
-            ", ".join(stmt.split()[5] for stmt in statements),
-        )
 
         face_samples_statements = (
             """
