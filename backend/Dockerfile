@@ -1,4 +1,8 @@
-FROM python:3.11-slim
+FROM nvidia/cuda:12.5.0-base-ubuntu22.04
+
+RUN apt update \
+    && apt install -y python3 python3-pip python3-venv \
+    && rm -rf /var/lib/apt/lists/*
 
 ENV PIP_DEFAULT_TIMEOUT=600 \
     PIP_RETRIES=10 \
@@ -23,10 +27,10 @@ RUN apt-get update \
     && ldconfig -p | grep -q "libGL.so.1"
 
 COPY requirements.txt constraints.txt ./
-RUN pip install --no-cache-dir --default-timeout=${PIP_DEFAULT_TIMEOUT} -r requirements.txt -c constraints.txt \
-    && pip uninstall -y opencv-python || true \
-    && pip install --no-cache-dir --force-reinstall opencv-python-headless==4.10.0.84
+RUN python3 -m pip install --no-cache-dir --default-timeout=${PIP_DEFAULT_TIMEOUT} -r requirements.txt -c constraints.txt \
+    && python3 -m pip uninstall -y opencv-python || true \
+    && python3 -m pip install --no-cache-dir --force-reinstall opencv-python-headless==4.10.0.84
 
 COPY . ./backend
 EXPOSE 8000
-CMD ["python", "-m", "backend.main"]
+CMD ["python3", "-m", "backend.main"]
