@@ -68,6 +68,7 @@ class Settings(BaseSettings):
 
     retention_days: int = Field(7, ge=0)
     retention_cleanup_interval_hours: float = Field(6.0, ge=0.0)
+    face_sample_unverified_retention_days: int = Field(7, ge=0)
 
     frontend_origins: str = Field("")
     frontend_url: str = Field("")
