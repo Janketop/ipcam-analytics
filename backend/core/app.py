@@ -69,19 +69,26 @@ def create_app() -> FastAPI:
         "last_run": None,  # type: Optional[datetime]
         "deleted_events": 0,
         "deleted_snapshots": 0,
+        "deleted_face_samples": 0,
         "error": None,
         "cutoff": None,
+        "face_sample_cutoff": None,
     }
     app.state.cleanup_lock = asyncio.Lock()
     app.state.background_tasks: list[asyncio.Task] = []
     app.state.retention_days = settings.retention_days
+    app.state.face_sample_unverified_retention_days = (
+        settings.face_sample_unverified_retention_days
+    )
     app.state.cleanup_interval_hours = settings.retention_cleanup_interval_hours
     app.state.self_training_service = SelfTrainingService()
 
     _log_gpu_status()
     logger.info(
-        "Приложение подготовлено: face_blur=%s, retention=%d дней",
+        "Приложение подготовлено: face_blur=%s, retention=%d дней, "
+        "неразмеченные=%d дней",
         settings.face_blur,
         settings.retention_days,
+        settings.face_sample_unverified_retention_days,
     )
     return app
