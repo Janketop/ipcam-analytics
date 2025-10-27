@@ -1,9 +1,6 @@
-"""Сервис для распознавания сотрудников по снимкам лиц."""
-from __future__ import annotations
-
-from __future__ import annotations
-
 """Распознавание сотрудников на основе эталонных снимков лиц."""
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
