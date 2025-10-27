@@ -1,9 +1,75 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Camera, CameraStatus } from '../types/api';
+import { Camera, CameraStatus, CameraZone, ZonePoint } from '../types/api';
 
 const DEFAULT_STATUS: CameraStatus = 'unknown';
 const DEFAULT_IDLE_ALERT_TIME = 300;
 const KNOWN_STATUSES: CameraStatus[] = ['online', 'offline', 'starting', 'stopping', 'no_signal', 'unknown'];
+
+const toNumberOrNull = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (!Number.isNaN(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+};
+
+const clamp01 = (value: number): number => {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
+};
+
+const normalizeZonePoint = (value: unknown): ZonePoint | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const obj = value as Record<string, unknown>;
+  const rawX = obj.x ?? (obj as Record<string, unknown>).X;
+  const rawY = obj.y ?? (obj as Record<string, unknown>).Y;
+  const x = toNumberOrNull(rawX);
+  const y = toNumberOrNull(rawY);
+  if (x == null || y == null) {
+    return null;
+  }
+  return { x: clamp01(x), y: clamp01(y) };
+};
+
+export const normalizeCameraZones = (raw: unknown): CameraZone[] => {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  const normalized: CameraZone[] = [];
+  raw.forEach((zoneRaw, index) => {
+    if (!zoneRaw || typeof zoneRaw !== 'object') {
+      return;
+    }
+    const zoneObj = zoneRaw as Record<string, unknown>;
+    const pointsRaw = Array.isArray(zoneObj.points) ? zoneObj.points : [];
+    const points: ZonePoint[] = pointsRaw
+      .map(normalizeZonePoint)
+      .filter((pt): pt is ZonePoint => Boolean(pt));
+    if (points.length < 3) {
+      return;
+    }
+    const id =
+      typeof zoneObj.id === 'string' && zoneObj.id.trim()
+        ? zoneObj.id.trim()
+        : `zone-${index + 1}`;
+    const name = typeof zoneObj.name === 'string' ? zoneObj.name : null;
+    normalized.push({ id, name, points });
+  });
+
+  return normalized;
+};
 
 type FetchOptions = {
   silent?: boolean;
@@ -21,19 +87,6 @@ type WsStatusPayload = {
   last_frame_ts?: unknown;
   uptimeSec?: unknown;
   uptime_sec?: unknown;
-};
-
-const toNumberOrNull = (value: unknown): number | null => {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value === 'string') {
-    const parsed = Number(value);
-    if (!Number.isNaN(parsed)) {
-      return parsed;
-    }
-  }
-  return null;
 };
 
 const toBoolean = (value: unknown, fallback: boolean): boolean => {
@@ -129,6 +182,7 @@ const normalizeCamera = (raw: unknown): Camera | null => {
   );
   const idleAlertTimeRaw = obj.idleAlertTime ?? (obj as Record<string, unknown>).idle_alert_time;
   const idleAlertTime = toNumberOrNull(idleAlertTimeRaw) ?? DEFAULT_IDLE_ALERT_TIME;
+  const zones = normalizeCameraZones((obj as Record<string, unknown>).zones ?? obj.zones);
 
   return {
     id,
@@ -138,6 +192,7 @@ const normalizeCamera = (raw: unknown): Camera | null => {
     detectCar,
     captureEntryTime,
     idleAlertTime,
+    zones,
     status,
     fps,
     uptimeSec,
@@ -239,6 +294,7 @@ export const useCameras = (apiBase: string) => {
               detectCar: true,
               captureEntryTime: true,
               idleAlertTime: DEFAULT_IDLE_ALERT_TIME,
+              zones: [],
               status: mapped.status ?? DEFAULT_STATUS,
               fps: mapped.fps ?? null,
               uptimeSec: mapped.uptimeSec ?? null,
@@ -300,5 +356,7 @@ export const useCameras = (apiBase: string) => {
     };
   }, [apiBase, fetchCameras]);
 
-  return { cameras, setCameras, loading, error, reload: () => fetchCameras() };
+  const reload = useCallback((options?: FetchOptions) => fetchCameras(options), [fetchCameras]);
+
+  return { cameras, setCameras, loading, error, reload };
 };

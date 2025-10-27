@@ -91,6 +91,7 @@ class IngestManager:
             detect_car=camera.detect_car,
             capture_entry_time=camera.capture_entry_time,
             idle_alert_time=camera.idle_alert_time or settings.idle_alert_time,
+            zones=camera.zones,
             broadcaster=self.broadcaster,
             status_broadcaster=self.status_broadcaster,
             main_loop=self.main_loop,

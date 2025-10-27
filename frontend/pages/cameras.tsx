@@ -1,11 +1,13 @@
 import { FormEvent, useCallback, useState } from 'react';
 import Layout from '../components/Layout';
+import ZonesEditor from '../components/ZonesEditor';
 import { useApiBase } from '../hooks/useApiBase';
 import { useCameras } from '../hooks/useCameras';
-import type { CameraStatus } from '../types/api';
+import type { CameraStatus, CameraZone } from '../types/api';
 
 const DEFAULT_IDLE_ALERT_TIME = 300;
 const MAX_IDLE_ALERT_TIME = 86400;
+const ZONE_COLORS = ['#2563eb', '#16a34a', '#f97316', '#9333ea', '#0ea5e9'];
 
 const CamerasPage = () => {
   const { normalizedApiBase } = useApiBase();
@@ -22,6 +24,7 @@ const CamerasPage = () => {
   const [captureEntryTimeEnabled, setCaptureEntryTimeEnabled] = useState(true);
   const [editingCameraId, setEditingCameraId] = useState<number | null>(null);
   const [idleAlertTime, setIdleAlertTime] = useState<string>(String(DEFAULT_IDLE_ALERT_TIME));
+  const [zones, setZones] = useState<CameraZone[]>([]);
 
   const resetFormFields = useCallback(() => {
     setNewCameraName('');
@@ -31,6 +34,7 @@ const CamerasPage = () => {
     setCaptureEntryTimeEnabled(true);
     setEditingCameraId(null);
     setIdleAlertTime(String(DEFAULT_IDLE_ALERT_TIME));
+    setZones([]);
   }, []);
 
   const toggleForm = useCallback(() => {
@@ -83,6 +87,35 @@ const CamerasPage = () => {
         ? `${normalizedApiBase}/api/cameras/${editingCameraId}`
         : `${normalizedApiBase}/api/cameras/add`;
       const method = editingCameraId ? 'PATCH' : 'POST';
+      const preparedZones = zones
+        .map(zone => {
+          const points = zone.points
+            .map(point => {
+              const rawX = Number(point.x);
+              const rawY = Number(point.y);
+              if (!Number.isFinite(rawX) || !Number.isFinite(rawY)) {
+                return null;
+              }
+              return {
+                x: Math.min(Math.max(rawX, 0), 1),
+                y: Math.min(Math.max(rawY, 0), 1),
+              };
+            })
+            .filter((point): point is { x: number; y: number } => Boolean(point));
+          if (points.length < 3) {
+            return null;
+          }
+          const normalizedId =
+            typeof zone.id === 'string' && zone.id.trim() ? zone.id.trim() : undefined;
+          const trimmedName = typeof zone.name === 'string' ? zone.name.trim() : null;
+          return {
+            id: normalizedId,
+            name: trimmedName && trimmedName.length ? trimmedName : undefined,
+            points,
+          };
+        })
+        .filter((zone): zone is { id?: string; name?: string; points: { x: number; y: number }[] } => Boolean(zone));
+
       const response = await fetch(endpoint, {
         method,
         headers: {
@@ -95,6 +128,7 @@ const CamerasPage = () => {
           detect_car: detectCarEnabled,
           capture_entry_time: captureEntryTimeEnabled,
           idle_alert_time: idleSeconds,
+          zones: preparedZones,
         }),
       });
 
@@ -120,73 +154,7 @@ const CamerasPage = () => {
         throw new Error('Сервер вернул неожиданный ответ.');
       }
 
-      const updatedCameraId = Number(created.id);
-      const rtspUrl =
-        typeof created.rtspUrl === 'string'
-          ? created.rtspUrl
-          : typeof created.rtsp_url === 'string'
-            ? (created.rtsp_url as string)
-            : '';
-      const detectPerson =
-        typeof created.detectPerson === 'boolean'
-          ? created.detectPerson
-          : typeof created.detect_person === 'boolean'
-            ? created.detect_person
-            : true;
-      const detectCar =
-        typeof created.detectCar === 'boolean'
-          ? created.detectCar
-          : typeof created.detect_car === 'boolean'
-            ? created.detect_car
-            : true;
-      const captureEntryTime =
-        typeof created.captureEntryTime === 'boolean'
-          ? created.captureEntryTime
-          : typeof created.capture_entry_time === 'boolean'
-            ? created.capture_entry_time
-            : true;
-      const idleAlert =
-        typeof created.idleAlertTime === 'number'
-          ? created.idleAlertTime
-          : typeof created.idle_alert_time === 'number'
-            ? created.idle_alert_time
-            : idleSeconds;
-
-      setCameras(prev => {
-        if (editingCameraId != null) {
-          return prev.map(camera =>
-            camera.id === updatedCameraId
-              ? {
-                  ...camera,
-                  name: String(created.name),
-                  rtspUrl,
-                  detectPerson,
-                  detectCar,
-                  captureEntryTime,
-                  idleAlertTime: idleAlert,
-                }
-              : camera,
-          );
-        }
-
-        const next = [
-          ...prev,
-          {
-            id: updatedCameraId,
-            name: String(created.name),
-            rtspUrl,
-            detectPerson,
-            detectCar,
-            captureEntryTime,
-            idleAlertTime: idleAlert,
-            status: 'starting' as CameraStatus,
-            fps: null,
-            lastFrameTs: null,
-            uptimeSec: null,
-          },
-        ];
-        return next.sort((a, b) => a.id - b.id);
-      });
+      await reload({ silent: true });
 
       const successMessage =
         editingCameraId != null
@@ -208,9 +176,10 @@ const CamerasPage = () => {
     detectCarEnabled,
     captureEntryTimeEnabled,
     normalizedApiBase,
-    setCameras,
     editingCameraId,
     resetFormFields,
+    zones,
+    reload,
   ]);
 
   const handleEditCamera = useCallback(
@@ -229,6 +198,13 @@ const CamerasPage = () => {
       setDetectCarEnabled(Boolean(target.detectCar));
       setCaptureEntryTimeEnabled(Boolean(target.captureEntryTime));
       setIdleAlertTime(String(target.idleAlertTime ?? DEFAULT_IDLE_ALERT_TIME));
+      setZones(
+        (target.zones ?? []).map(zone => ({
+          id: zone.id,
+          name: zone.name ?? '',
+          points: zone.points.map(point => ({ x: point.x, y: point.y })),
+        })),
+      );
       setIsFormOpen(true);
     },
     [cameras],
@@ -411,6 +387,83 @@ const CamerasPage = () => {
       >
         {label}: {valueLabel}
       </span>
+    );
+  };
+
+  const renderZonesPreview = (cameraZones: CameraZone[] | undefined) => {
+    const validZones = (cameraZones ?? []).filter(
+      zone => Array.isArray(zone.points) && zone.points.length >= 3,
+    );
+
+    if (!validZones.length) {
+      return (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div
+            style={{
+              width: 80,
+              height: 60,
+              borderRadius: 10,
+              border: '1px dashed #cbd5f5',
+              background: '#f8fafc',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#94a3b8',
+              fontWeight: 600,
+              fontSize: 12,
+              textTransform: 'uppercase',
+            }}
+          >
+            нет
+          </div>
+          <span style={{ fontSize: 12, color: '#64748b' }}>Зоны не заданы</span>
+        </div>
+      );
+    }
+
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div
+          style={{
+            width: 96,
+            height: 72,
+            borderRadius: 12,
+            border: '1px solid #cbd5f5',
+            background: '#f8fafc',
+            overflow: 'hidden',
+          }}
+        >
+          <svg width="100%" height="100%" viewBox="0 0 100 100" preserveAspectRatio="none">
+            {validZones.map((zone, index) => {
+              const color = ZONE_COLORS[index % ZONE_COLORS.length];
+              const pointsAttr = zone.points
+                .map(point => {
+                  const x = Number.isFinite(point.x) ? Math.min(Math.max(point.x, 0), 1) : 0;
+                  const y = Number.isFinite(point.y) ? Math.min(Math.max(point.y, 0), 1) : 0;
+                  return `${Math.round(x * 100)},${Math.round(y * 100)}`;
+                })
+                .join(' ');
+              if (!pointsAttr) {
+                return null;
+              }
+              return (
+                <polygon
+                  key={zone.id ?? `zone-${index}`}
+                  points={pointsAttr}
+                  fill={color}
+                  fillOpacity={0.18}
+                  stroke={color}
+                  strokeWidth={2}
+                />
+              );
+            })}
+          </svg>
+        </div>
+        <div style={{ fontSize: 12, color: '#0f172a', lineHeight: 1.4 }}>
+          <div style={{ fontWeight: 600 }}>Зон: {validZones.length}</div>
+          <div style={{ color: '#64748b' }}>Активны ограничения по областям</div>
+        </div>
+      </div>
     );
   };
 
@@ -629,6 +682,31 @@ const CamerasPage = () => {
             style={{
               gridColumn: '1 / -1',
               display: 'flex',
+              flexDirection: 'column',
+              gap: 12,
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: 8,
+              }}
+            >
+              <span style={{ fontSize: 14, color: '#0f172a', fontWeight: 600 }}>Зоны наблюдения</span>
+              <span style={{ fontSize: 12, color: '#64748b' }}>Минимум 3 точки на полигон. Несохранённые зоны игнорируются.</span>
+            </div>
+            <ZonesEditor value={zones} onChange={setZones} disabled={isSubmitting} />
+            <p style={{ margin: 0, fontSize: 12, color: '#475569' }}>
+              Кликните по полю, чтобы добавить вершины полигона. Дважды нажмите «Отменить точку», чтобы скорректировать контур.
+            </p>
+          </div>
+          <div
+            style={{
+              gridColumn: '1 / -1',
+              display: 'flex',
               gap: 12,
               flexWrap: 'wrap',
             }}
@@ -750,7 +828,7 @@ const CamerasPage = () => {
                 width: '100%',
                 borderCollapse: 'separate',
                 borderSpacing: 0,
-                minWidth: 720,
+                minWidth: 920,
               }}
             >
               <thead>
@@ -818,6 +896,18 @@ const CamerasPage = () => {
                   <th
                     style={{
                       padding: '12px 16px',
+                      textAlign: 'left',
+                      fontSize: 13,
+                      fontWeight: 700,
+                      color: '#0f172a',
+                      borderBottom: '1px solid #e2e8f0',
+                    }}
+                  >
+                    Зоны
+                  </th>
+                  <th
+                    style={{
+                      padding: '12px 16px',
                       textAlign: 'center',
                       fontSize: 13,
                       fontWeight: 700,
@@ -867,6 +957,9 @@ const CamerasPage = () => {
                           {renderFeatureChip('Время въезда', Boolean(camera.captureEntryTime))}
                           {renderIdleThresholdChip(camera.idleAlertTime)}
                         </div>
+                      </td>
+                      <td style={{ padding: '14px 16px' }}>
+                        {renderZonesPreview(camera.zones)}
                       </td>
                       <td style={{ padding: '14px 16px', textAlign: 'center' }}>{renderStatusBadge(camera.status)}</td>
                       <td style={{ padding: '14px 16px', textAlign: 'right' }}>

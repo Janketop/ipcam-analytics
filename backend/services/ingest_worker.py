@@ -8,7 +8,7 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 from importlib import import_module, util
 from threading import Thread
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, Sequence
 
 import cv2
 
@@ -56,6 +56,7 @@ class IngestWorker(Thread):
         detect_car: bool = True,
         capture_entry_time: bool = True,
         idle_alert_time: int | float = settings.idle_alert_time,
+        zones: Optional[Sequence[dict[str, Any]]] = None,
     ) -> None:
         super().__init__(daemon=True)
         self.session_factory = session_factory
@@ -69,6 +70,10 @@ class IngestWorker(Thread):
         self.detect_car = detect_car
         self.capture_entry_time = capture_entry_time
         self.idle_alert_time = float(idle_alert_time)
+        self._zone_polygons: list[list[tuple[float, float]]] = self._sanitize_zones(
+            zones
+        )
+
         self.detector = AIDetector(
             name,
             face_blur=face_blur,
@@ -76,6 +81,7 @@ class IngestWorker(Thread):
             detect_person=detect_person,
             detect_car=detect_car,
             capture_entry_time=capture_entry_time,
+            zones=self._zone_polygons,
         )
         self.employee_recognizer = self._init_employee_recognizer()
         self.detector.set_employee_recognizer(self.employee_recognizer)
@@ -132,6 +138,25 @@ class IngestWorker(Thread):
             detect_person=self.detect_person,
             detect_car=self.detect_car,
             capture_entry_time=self.capture_entry_time,
+        )
+
+    def update_zones(
+        self, zones: Optional[Sequence[dict[str, Any]]] = None
+    ) -> None:
+        polygons = self._sanitize_zones(zones)
+        self._zone_polygons = polygons
+        try:
+            self.detector.update_zones(polygons)
+        except Exception:
+            logger.exception(
+                "[%s] Не удалось обновить зоны детекции", self.name
+            )
+            return
+
+        logger.info(
+            "[%s] Обновлены зоны детекции (%d полигонов)",
+            self.name,
+            len(polygons),
         )
 
     def set_broadcaster(self, fn):
@@ -740,3 +765,46 @@ class IngestWorker(Thread):
 
     def get_visual_frame_jpeg(self):
         return self.last_visual_jpeg
+
+    def _sanitize_zones(
+        self, zones: Optional[Sequence[dict[str, Any]]] = None
+    ) -> list[list[tuple[float, float]]]:
+        if not zones:
+            return []
+
+        normalized: list[list[tuple[float, float]]] = []
+        for zone in zones:
+            points: Optional[Sequence[Any]] = None
+            if isinstance(zone, dict):
+                raw_points = zone.get("points")
+                if isinstance(raw_points, Sequence):
+                    points = raw_points
+            elif isinstance(zone, Sequence) and not isinstance(zone, (str, bytes)):
+                points = zone
+            if not points:
+                continue
+
+            normalized_points: list[tuple[float, float]] = []
+            for point in points:
+                if isinstance(point, dict):
+                    x = point.get("x")
+                    y = point.get("y")
+                elif isinstance(point, Sequence) and not isinstance(point, (str, bytes)) and len(point) >= 2:
+                    x, y = point[0], point[1]
+                else:
+                    continue
+
+                try:
+                    x_val = float(x)
+                    y_val = float(y)
+                except (TypeError, ValueError):
+                    continue
+
+                x_val = max(0.0, min(1.0, x_val))
+                y_val = max(0.0, min(1.0, y_val))
+                normalized_points.append((x_val, y_val))
+
+            if len(normalized_points) >= 3:
+                normalized.append(normalized_points)
+
+        return normalized
