@@ -73,7 +73,8 @@ PY
 
 RUN set -eux; \
     python3 -m pip uninstall -y opencv-python || true; \
-    python3 -m pip install --no-cache-dir --force-reinstall opencv-python-headless==4.10.0.84
+    python3 -m pip install --no-cache-dir --force-reinstall \
+        -c constraints.txt opencv-python-headless==4.10.0.84
 
 COPY . ./backend
 EXPOSE 8000
