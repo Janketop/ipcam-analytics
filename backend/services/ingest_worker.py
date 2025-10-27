@@ -15,6 +15,7 @@ from backend.core.database import SessionFactory
 from backend.core.logger import logger
 from backend.models import Event
 
+from backend.services.activity_detector import ActivityDetector
 from backend.services.ai_detector import AIDetector
 from backend.services.snapshots import save_snapshot
 
@@ -54,6 +55,7 @@ class IngestWorker(Thread):
             detect_car=detect_car,
             capture_entry_time=capture_entry_time,
         )
+        self.activity_detector = ActivityDetector()
         self.score_buffer: deque[float] = deque(maxlen=self.detector.score_smoothing)
         self.last_visual_jpeg: Optional[bytes] = None
 
@@ -333,7 +335,14 @@ class IngestWorker(Thread):
                         continue
                     frame = latest_frame
 
-                phone_usage_raw, conf_raw, snapshot_img, vis, car_events = self.detector.process_frame(frame)
+                (
+                    phone_usage_raw,
+                    conf_raw,
+                    snapshot_img,
+                    vis,
+                    car_events,
+                    people,
+                ) = self.detector.process_frame(frame)
 
                 frame_processed_monotonic = time.monotonic()
                 if self._last_frame_monotonic is not None:
@@ -353,6 +362,7 @@ class IngestWorker(Thread):
                     conf = conf_raw
 
                 now = datetime.now(timezone.utc)
+                activity_updates = self.activity_detector.update(people, now=now)
                 events_to_store = []
                 ev_type = None
                 if self.detect_person and phone_usage:
@@ -376,6 +386,29 @@ class IngestWorker(Thread):
                             "snapshot": snapshot_img,
                             "meta": {},
                             "kind": "phone",
+                        }
+                    )
+
+                for activity in activity_updates:
+                    if not activity.get("changed"):
+                        continue
+                    events_to_store.append(
+                        {
+                            "ts": now,
+                            "type": activity["state"],
+                            "confidence": float(activity.get("confidence", 0.0)),
+                            "snapshot": snapshot_img,
+                            "meta": {
+                                "personId": activity.get("id"),
+                                "poseConfidence": activity.get("confidence"),
+                                "headAngle": activity.get("head_angle"),
+                                "headMovement": activity.get("head_movement"),
+                                "handMovement": activity.get("hand_movement"),
+                                "movementScore": activity.get("movement_score"),
+                                "idleSeconds": activity.get("idle_seconds"),
+                                "awaySeconds": activity.get("away_seconds"),
+                            },
+                            "kind": "activity",
                         }
                     )
 
