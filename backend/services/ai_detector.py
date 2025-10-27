@@ -15,6 +15,7 @@ except Exception:  # pragma: no cover - torch may отсутствовать в 
     torch = None
 
 from backend.core.config import settings
+from backend.core.logger import logger
 from backend.services.snapshots import load_face_cascade, prepare_snapshot
 
 PHONE_CLASS = "cell phone"
@@ -149,7 +150,12 @@ class AIDetector:
             try:
                 self.ocr_reader = Reader(langs, gpu=False)
             except Exception as exc:
-                print(f"[{self.camera_name}] не удалось инициализировать OCR: {exc}")
+                logger.warning(
+                    "[%s] Не удалось инициализировать OCR: %s",
+                    self.camera_name,
+                    exc,
+                    exc_info=True,
+                )
                 self._ocr_failed = True
                 self.ocr_reader = None
         return self.ocr_reader
@@ -196,7 +202,12 @@ class AIDetector:
         try:
             results = reader.readtext(plate_img)
         except Exception as exc:
-            print(f"[{self.camera_name}] ошибка OCR: {exc}")
+            logger.warning(
+                "[%s] Ошибка OCR: %s",
+                self.camera_name,
+                exc,
+                exc_info=True,
+            )
             return None
         texts = []
         for _bbox, text, conf in results:
