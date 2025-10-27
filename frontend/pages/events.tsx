@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import ActivityChart from '../components/ActivityChart';
 import Layout from '../components/Layout';
 import { useApiBase } from '../hooks/useApiBase';
 import { EventItem, EventMeta } from '../types/api';
@@ -130,6 +131,25 @@ const EventsPage = () => {
       <p style={{ maxWidth: 640, color: '#475569' }}>
         Здесь отображаются последние детекции с камер видеонаблюдения. Новые события прилетают в режиме реального времени.
       </p>
+
+      <section style={{ marginBottom: 24 }}>
+        <div
+          style={{
+            background: '#fff',
+            border: '1px solid #e2e8f0',
+            borderRadius: 12,
+            padding: 16,
+            boxShadow: '0 8px 16px rgba(15,23,42,0.08)',
+          }}
+        >
+          <h2 style={{ marginTop: 0 }}>Активность за последние 24 часа</h2>
+          <p style={{ marginTop: 0, maxWidth: 560, color: '#475569' }}>
+            График показывает распределение количества зафиксированных событий по часам. На нём легко заметить пики активности
+            и тихие периоды за последние сутки.
+          </p>
+          <ActivityChart events={events} />
+        </div>
+      </section>
 
       <div style={{ overflowX: 'auto', background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', boxShadow: '0 8px 16px rgba(15,23,42,0.08)' }}>
         <table style={{ width: '100%', minWidth: 720, borderCollapse: 'collapse' }}>
