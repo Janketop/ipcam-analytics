@@ -44,9 +44,11 @@ class IngestManager:
     def stop_all(self) -> None:
         if not self.workers:
             logger.info("Нет активных ingest-воркеров для остановки")
-        for worker in self.workers:
-            worker.stop_flag = True
-            logger.info("Отправлен сигнал остановки ingest-воркеру '%s'", worker.name)
+            return
+
+        for worker in list(self.workers):
+            self.stop_worker_for_camera(worker.name)
+
         logger.info("Все ingest-воркеры получили сигнал остановки")
 
     def get_worker(self, name: str):
@@ -86,6 +88,33 @@ class IngestManager:
             camera.id,
         )
         return worker
+
+    def stop_worker_for_camera(self, camera_name: str) -> bool:
+        """Останавливает ingest-воркер, связанный с указанной камерой."""
+
+        worker = self.get_worker(camera_name)
+        if not worker:
+            logger.info(
+                "Запрос на остановку ingest-воркера для '%s', но активный поток не найден",
+                camera_name,
+            )
+            return False
+
+        worker.stop_flag = True
+        logger.info("Отправлен сигнал остановки ingest-воркеру '%s'", worker.name)
+        worker.join(timeout=5.0)
+        if worker.is_alive():
+            logger.warning(
+                "Ingest-воркер '%s' не завершил работу в отведённое время",
+                worker.name,
+            )
+
+        try:
+            self.workers.remove(worker)
+        except ValueError:
+            pass
+
+        return True
 
     def runtime_status(self) -> dict:
         workers = [worker.runtime_status() for worker in self.workers]
