@@ -30,6 +30,10 @@ class IngestWorker(Thread):
         broadcaster: Optional[Callable[[dict], Awaitable[None]]] = None,
         status_broadcaster: Optional[Callable[[dict], Awaitable[None]]] = None,
         main_loop: Optional[asyncio.AbstractEventLoop] = None,
+        *,
+        detect_person: bool = True,
+        detect_car: bool = True,
+        capture_entry_time: bool = True,
     ) -> None:
         super().__init__(daemon=True)
         self.session_factory = session_factory
@@ -39,7 +43,17 @@ class IngestWorker(Thread):
         self.stop_flag = False
 
         self.visualize = settings.visualize
-        self.detector = AIDetector(name, face_blur=face_blur, visualize=self.visualize)
+        self.detect_person = detect_person
+        self.detect_car = detect_car
+        self.capture_entry_time = capture_entry_time
+        self.detector = AIDetector(
+            name,
+            face_blur=face_blur,
+            visualize=self.visualize,
+            detect_person=detect_person,
+            detect_car=detect_car,
+            capture_entry_time=capture_entry_time,
+        )
         self.score_buffer: deque[float] = deque(maxlen=self.detector.score_smoothing)
         self.last_visual_jpeg: Optional[bytes] = None
 
@@ -58,6 +72,28 @@ class IngestWorker(Thread):
         self.status_interval = settings.ingest_status_interval
         self.status_stale_seconds = settings.ingest_status_stale_threshold
         self._last_status_sent_monotonic: Optional[float] = None
+
+    def update_flags(
+        self,
+        *,
+        detect_person: Optional[bool] = None,
+        detect_car: Optional[bool] = None,
+        capture_entry_time: Optional[bool] = None,
+    ) -> None:
+        if detect_person is not None:
+            self.detect_person = bool(detect_person)
+            if not self.detect_person:
+                self.score_buffer.clear()
+        if detect_car is not None:
+            self.detect_car = bool(detect_car)
+        if capture_entry_time is not None:
+            self.capture_entry_time = bool(capture_entry_time)
+
+        self.detector.update_flags(
+            detect_person=self.detect_person,
+            detect_car=self.detect_car,
+            capture_entry_time=self.capture_entry_time,
+        )
 
     def set_broadcaster(self, fn):
         self.broadcaster = fn
@@ -305,15 +341,21 @@ class IngestWorker(Thread):
                 self._last_frame_monotonic = frame_processed_monotonic
                 self.last_frame_at = datetime.now(timezone.utc)
 
-                self.score_buffer.append(conf_raw)
-                smoothed_conf = max(self.score_buffer) if self.score_buffer else conf_raw
-                phone_usage = phone_usage_raw or smoothed_conf >= self.phone_score_threshold
-                conf = smoothed_conf if phone_usage else conf_raw
+                if self.detect_person:
+                    self.score_buffer.append(conf_raw)
+                    smoothed_conf = max(self.score_buffer) if self.score_buffer else conf_raw
+                    phone_usage = phone_usage_raw or smoothed_conf >= self.phone_score_threshold
+                    conf = smoothed_conf if phone_usage else conf_raw
+                else:
+                    self.score_buffer.clear()
+                    smoothed_conf = conf_raw
+                    phone_usage = False
+                    conf = conf_raw
 
                 now = datetime.now(timezone.utc)
                 events_to_store = []
                 ev_type = None
-                if phone_usage:
+                if self.detect_person and phone_usage:
                     self.phone_active_until = now + timedelta(seconds=5)
                     ev_type = "PHONE_USAGE"
 
@@ -337,22 +379,24 @@ class IngestWorker(Thread):
                         }
                     )
 
-                for car_ev in car_events:
-                    car_now = datetime.now(timezone.utc)
-                    meta = {
-                        "plate": car_ev.get("plate") or "НЕ РАСПОЗНАНО",
-                        "entry_ts": car_now.isoformat(),
-                    }
-                    events_to_store.append(
-                        {
-                            "ts": car_now,
-                            "type": "CAR_ENTRY",
-                            "confidence": float(car_ev.get("confidence", 0.0)),
-                            "snapshot": car_ev.get("snapshot"),
-                            "meta": meta,
-                            "kind": "car",
+                if self.detect_car:
+                    for car_ev in car_events:
+                        car_now = datetime.now(timezone.utc)
+                        meta = {
+                            "plate": car_ev.get("plate") or "НЕ РАСПОЗНАНО",
                         }
-                    )
+                        if self.capture_entry_time:
+                            meta["entry_ts"] = car_now.isoformat()
+                        events_to_store.append(
+                            {
+                                "ts": car_now,
+                                "type": "CAR_ENTRY",
+                                "confidence": float(car_ev.get("confidence", 0.0)),
+                                "snapshot": car_ev.get("snapshot"),
+                                "meta": meta,
+                                "kind": "car",
+                            }
+                        )
 
                 persisted_events = []
                 if events_to_store:

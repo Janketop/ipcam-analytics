@@ -23,6 +23,10 @@ export type CameraStatus = 'online' | 'offline' | 'starting' | 'stopping' | 'no_
 export type Camera = {
   id: number;
   name: string;
+  rtspUrl: string;
+  detectPerson: boolean;
+  detectCar: boolean;
+  captureEntryTime: boolean;
   status?: CameraStatus;
   fps?: number | null;
   lastFrameTs?: string | null;

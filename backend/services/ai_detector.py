@@ -41,10 +41,22 @@ def resolve_device(preferred: Optional[str] = None, cuda_env: Optional[str] = No
 class AIDetector:
     """Инкапсулирует работу моделей YOLO и эвристики поверх них."""
 
-    def __init__(self, camera_name: str, face_blur: bool, visualize: bool) -> None:
+    def __init__(
+        self,
+        camera_name: str,
+        face_blur: bool,
+        visualize: bool,
+        *,
+        detect_person: bool = True,
+        detect_car: bool = True,
+        capture_entry_time: bool = True,
+    ) -> None:
         self.camera_name = camera_name
         self.face_blur = face_blur
         self.visualize = visualize
+        self.detect_person = detect_person
+        self.detect_car = detect_car
+        self.capture_entry_time = capture_entry_time
 
         det_weights = settings.yolo_det_model
         pose_weights = settings.yolo_pose_model
@@ -98,6 +110,20 @@ class AIDetector:
         self.face_cascade = load_face_cascade() if face_blur else None
         self.phone_idx: Optional[int] = None
         self.last_car_event_time = 0.0
+
+    def update_flags(
+        self,
+        *,
+        detect_person: Optional[bool] = None,
+        detect_car: Optional[bool] = None,
+        capture_entry_time: Optional[bool] = None,
+    ) -> None:
+        if detect_person is not None:
+            self.detect_person = bool(detect_person)
+        if detect_car is not None:
+            self.detect_car = bool(detect_car)
+        if capture_entry_time is not None:
+            self.capture_entry_time = bool(capture_entry_time)
 
     def runtime_status(self) -> dict:
         preferred = (self.device_preference or "auto").strip() or "auto"
@@ -274,13 +300,19 @@ class AIDetector:
         return prepare_snapshot(snap, self.face_blur, self.face_cascade)
 
     def process_frame(self, frame) -> Tuple[bool, float, Any, Any, List[Dict[str, Any]]]:
-        fg_mask = self.bg_subtractor.apply(frame)
+        detect_person = self.detect_person
+        detect_car = self.detect_car
 
-        det_kwargs = {"imgsz": self.det_imgsz, "conf": self.det_conf}
-        if self.predict_device:
-            det_kwargs["device"] = self.predict_device
-        det_res = self.det(frame, **det_kwargs)[0]
-        if self.phone_idx is None:
+        fg_mask = self.bg_subtractor.apply(frame) if detect_car else None
+
+        det_res = None
+        if detect_person or detect_car:
+            det_kwargs = {"imgsz": self.det_imgsz, "conf": self.det_conf}
+            if self.predict_device:
+                det_kwargs["device"] = self.predict_device
+            det_res = self.det(frame, **det_kwargs)[0]
+
+        if self.phone_idx is None and det_res is not None and detect_person:
             names = getattr(self.det.model, "names", None) or getattr(self.det, "names", {})
             for k, v in names.items():
                 if v == PHONE_CLASS:
@@ -289,7 +321,7 @@ class AIDetector:
 
         phones: List[Dict[str, Any]] = []
         cars: List[Dict[str, Any]] = []
-        boxes = getattr(det_res, "boxes", None)
+        boxes = getattr(det_res, "boxes", None) if det_res is not None else None
         if boxes is not None:
             for b in boxes:
                 try:
@@ -298,17 +330,24 @@ class AIDetector:
                     continue
                 conf = float(b.conf[0]) if getattr(b, "conf", None) is not None else 0.0
                 xyxy = b.xyxy[0].cpu().numpy()
-                if self.phone_idx is not None and cls_idx == self.phone_idx and conf >= self.det_conf:
+                if (
+                    detect_person
+                    and self.phone_idx is not None
+                    and cls_idx == self.phone_idx
+                    and conf >= self.det_conf
+                ):
                     cx = float((xyxy[0] + xyxy[2]) * 0.5)
                     cy = float((xyxy[1] + xyxy[3]) * 0.5)
                     phones.append({"bbox": xyxy, "center": np.array([cx, cy], dtype=np.float32), "conf": conf})
-                if cls_idx in self.car_class_ids and conf >= self.car_conf_threshold:
+                if detect_car and cls_idx in self.car_class_ids and conf >= self.car_conf_threshold:
                     cars.append({"bbox": xyxy, "conf": conf})
 
-        pose_kwargs = {"imgsz": self.det_imgsz, "conf": self.pose_conf}
-        if self.predict_device:
-            pose_kwargs["device"] = self.predict_device
-        pose_res = self.pose(frame, **pose_kwargs)[0]
+        pose_res = None
+        if detect_person:
+            pose_kwargs = {"imgsz": self.det_imgsz, "conf": self.pose_conf}
+            if self.predict_device:
+                pose_kwargs["device"] = self.predict_device
+            pose_res = self.pose(frame, **pose_kwargs)[0]
 
         phone_usage = False
         best_conf = 0.0
@@ -349,7 +388,9 @@ class AIDetector:
             car_events.append({"plate": plate_text, "confidence": float(car["conf"]), "snapshot": car_snapshot})
             self.last_car_event_time = now_monotonic
 
-        if pose_res.boxes is None or pose_res.keypoints is None:
+        if not detect_person:
+            people_iter = []
+        elif pose_res is None or pose_res.boxes is None or pose_res.keypoints is None:
             people_iter = []
         else:
             kpts_xy = pose_res.keypoints.xy.cpu().numpy()
@@ -461,16 +502,18 @@ class AIDetector:
                         center_y = int((bbox[1] + bbox[3]) * 0.5)
                         cv2.putText(vis, "POSE PHONE", (x1, max(15, center_y)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
 
-        if need_overlay and vis is not None:
+        if detect_person and need_overlay and vis is not None:
             for phone in phones:
                 x1, y1, x2, y2 = phone["bbox"]
                 cv2.rectangle(vis, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 255), 2)
                 cv2.putText(vis, f"PHONE {phone['conf']:.2f}", (int(x1), int(y1) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
-        if phone_usage and need_overlay and vis is not None:
+        if detect_person and phone_usage and need_overlay and vis is not None:
             cv2.putText(vis, f"PHONE_USAGE ({best_conf:.2f})", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
-        snap_src = vis if (self.visualize and vis is not None) else frame
-        snapshot = prepare_snapshot(snap_src, self.face_blur, self.face_cascade)
+        snapshot = None
+        if detect_person:
+            snap_src = vis if (self.visualize and vis is not None) else frame
+            snapshot = prepare_snapshot(snap_src, self.face_blur, self.face_cascade)
 
         return phone_usage, best_conf, snapshot, vis if self.visualize else None, car_events
