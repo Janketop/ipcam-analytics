@@ -14,7 +14,7 @@ import cv2
 from backend.core.config import settings
 from backend.core.database import SessionFactory
 from backend.core.logger import logger
-from backend.models import Event
+from backend.models import Event, FaceSample
 
 from backend.services.activity_detector import ActivityDetector
 from backend.services.ai_detector import AIDetector
@@ -477,6 +477,28 @@ class IngestWorker(Thread):
                             )
                             session.add(event)
                             session.flush()
+
+                            if (
+                                payload["kind"] == "activity"
+                                and snap_url
+                                and not session.query(FaceSample)
+                                .filter(FaceSample.event_id == event.id)
+                                .first()
+                            ):
+                                candidate_raw = meta.get("person_id") or meta.get("personId")
+                                candidate_key = None
+                                if isinstance(candidate_raw, str) and candidate_raw.strip():
+                                    candidate_key = candidate_raw.strip()
+
+                                sample = FaceSample(
+                                    event_id=event.id,
+                                    camera_id=self.cam_id,
+                                    snapshot_url=snap_url,
+                                    status=FaceSample.STATUS_UNVERIFIED,
+                                    candidate_key=candidate_key,
+                                    captured_at=ts,
+                                )
+                                session.add(sample)
                             persisted_events.append(
                                 {
                                     "id": event.id,
