@@ -1,7 +1,24 @@
 FROM nvidia/cuda:12.5.0-base-ubuntu22.04
 
-RUN apt update \
-    && apt install -y python3 python3-pip python3-venv \
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        gnupg \
+        software-properties-common \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3.11 \
+        python3.11-dev \
+        python3.11-distutils \
+        python3.11-venv \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
+    && python3 -m ensurepip --upgrade \
+    && python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && ln -sf /usr/bin/python3 /usr/local/bin/python \
+    && apt-get purge -y --auto-remove gnupg software-properties-common \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PIP_DEFAULT_TIMEOUT=600 \
