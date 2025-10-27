@@ -1,10 +1,11 @@
 """Сценарий самообучения модели детекции телефонов."""
 from __future__ import annotations
 
+import json
 import random
 import shutil
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from backend.core.config import settings
 from backend.core.logger import logger
@@ -13,6 +14,7 @@ from backend.core.paths import BACKEND_DIR, DATASET_PHONE_USAGE_DIR
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
 MODELS_DIR = BACKEND_DIR.parent / "models"
 PREPARED_DATA_DIR = DATASET_PHONE_USAGE_DIR / "prepared"
+MANIFEST_PATH = DATASET_PHONE_USAGE_DIR / "manifest.json"
 DEFAULT_CLASS_NAME = "cell phone"
 DEFAULT_EPOCHS = 10
 TRAIN_SPLIT = 0.8
@@ -31,11 +33,52 @@ def _find_label(image_path: Path) -> Optional[Path]:
     return None
 
 
-def collect_samples() -> List[Tuple[Path, Path]]:
-    """Ищет размеченные изображения в каталоге датасета."""
+def _load_manifest() -> Dict[str, float]:
+    """Читает список уже использованных снимков."""
 
+    if not MANIFEST_PATH.exists():
+        return {}
+    try:
+        data = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        logger.warning("Файл манифеста %s повреждён — будет создан заново", MANIFEST_PATH)
+        return {}
+    if not isinstance(data, dict):
+        logger.warning("Некорректный формат манифеста %s — используется пустой список", MANIFEST_PATH)
+        return {}
+    manifest: Dict[str, float] = {}
+    for key, value in data.items():
+        try:
+            manifest[key] = float(value)
+        except (TypeError, ValueError):
+            logger.debug("Невозможно интерпретировать отметку для %s, пропуск", key)
+    return manifest
+
+
+def _save_manifest(manifest: Dict[str, float]) -> None:
+    """Сохраняет манифест использованных изображений."""
+
+    MANIFEST_PATH.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _manifest_key(path: Path) -> str:
+    """Возвращает ключ файла для хранения в манифесте."""
+
+    try:
+        relative = path.relative_to(DATASET_PHONE_USAGE_DIR)
+    except ValueError:
+        relative = Path(path.name)
+    return relative.as_posix()
+
+
+def collect_samples() -> List[Tuple[Path, Path]]:
+    """Ищет новые размеченные изображения в каталоге датасета."""
+
+    manifest = _load_manifest()
     samples: List[Tuple[Path, Path]] = []
     skipped: List[Path] = []
+    already_used = 0
+
     for item in DATASET_PHONE_USAGE_DIR.iterdir():
         if not item.is_file():
             continue
@@ -45,13 +88,24 @@ def collect_samples() -> List[Tuple[Path, Path]]:
         if label is None:
             skipped.append(item)
             continue
+
+        key = _manifest_key(item)
+        last_used = manifest.get(key, 0.0)
+        current_mtime = max(item.stat().st_mtime, label.stat().st_mtime)
+        if last_used >= current_mtime:
+            already_used += 1
+            continue
         samples.append((item, label))
 
     if skipped:
         logger.warning(
             "Найдено %d снимков без файлов разметки — они пропущены при обучении", len(skipped)
         )
-    logger.info("Собрано %d размеченных снимков для обучения", len(samples))
+    logger.info(
+        "Собрано %d новых размеченных снимков (ещё %d уже использованы ранее)",
+        len(samples),
+        already_used,
+    )
     return samples
 
 
@@ -100,6 +154,17 @@ def prepare_dataset(samples: Sequence[Tuple[Path, Path]]) -> Path:
     data_yaml.write_text(yaml_content + "\n", encoding="utf-8")
     logger.info("Датасет подготовлен в %s", PREPARED_DATA_DIR)
     return data_yaml
+
+
+def _mark_samples_as_used(samples: Sequence[Tuple[Path, Path]]) -> None:
+    """Обновляет манифест, фиксируя использование снимков."""
+
+    manifest = _load_manifest()
+    for image_path, label_path in samples:
+        key = _manifest_key(image_path)
+        manifest[key] = max(image_path.stat().st_mtime, label_path.stat().st_mtime)
+    _save_manifest(manifest)
+    logger.info("Обновлён манифест использованных снимков: %s", MANIFEST_PATH)
 
 
 def _resolve_base_weights() -> str:
@@ -153,21 +218,24 @@ def train_model(data_yaml: Path) -> Path:
     return target
 
 
-def main() -> None:
+def main() -> Optional[Path]:
     """Точка входа сценария самообучения."""
 
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     samples = collect_samples()
     if not samples:
-        logger.warning("В датасете нет размеченных снимков, обучение пропущено")
-        return
+        logger.info("Новых размеченных снимков не найдено — обучение пропущено")
+        return None
 
     data_yaml = prepare_dataset(samples)
     try:
-        train_model(data_yaml)
+        weights = train_model(data_yaml)
     except Exception:
         logger.exception("Ошибка при дообучении модели")
         raise
+    else:
+        _mark_samples_as_used(samples)
+        return weights
 
 
 if __name__ == "__main__":  # pragma: no cover - ручной запуск
