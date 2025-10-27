@@ -4,37 +4,6 @@ import Layout from '../components/Layout';
 import { useApiBase } from '../hooks/useApiBase';
 import { EventItem, EventMeta } from '../types/api';
 
-type ActivityState = 'WORKING' | 'NOT_WORKING' | 'AWAY';
-
-const ACTIVITY_STATE_ORDER: ActivityState[] = ['WORKING', 'NOT_WORKING', 'AWAY'];
-
-const ACTIVITY_STATE_CONFIG: Record<
-  ActivityState,
-  { label: string; description: string; color: string; background: string }
-> = {
-  WORKING: {
-    label: 'Работает',
-    description: 'Недавние движения подтверждают активную работу сотрудника.',
-    color: '#16a34a',
-    background: 'rgba(22,163,74,0.12)',
-  },
-  NOT_WORKING: {
-    label: 'Не работает',
-    description: 'Долгое отсутствие движений — сотрудник вероятно бездействует.',
-    color: '#ca8a04',
-    background: 'rgba(202,138,4,0.12)',
-  },
-  AWAY: {
-    label: 'Нет на месте',
-    description: 'Сотрудник не попадал в кадр в течение заданного времени.',
-    color: '#64748b',
-    background: 'rgba(100,116,139,0.12)',
-  },
-};
-
-const isActivityEvent = (type: string): type is ActivityState =>
-  ACTIVITY_STATE_ORDER.includes(type as ActivityState);
-
 type WsEventPayload = {
   id?: number;
   type?: string;
@@ -44,12 +13,6 @@ type WsEventPayload = {
   snapshot_url?: string;
   camera?: string;
   meta?: EventMeta;
-};
-
-type CurrentActivityStatus = {
-  personId: string;
-  status: ActivityState;
-  timestamp: string;
 };
 
 const mapWsEventPayload = (payload: WsEventPayload | null): EventItem | null => {
@@ -92,6 +55,14 @@ const normalizeNumber = (value: unknown): number | undefined => {
   }
   return undefined;
 };
+
+const getEventTimestamp = (event: EventItem): number => {
+  const ts = Date.parse(event.start_ts);
+  return Number.isNaN(ts) ? 0 : ts;
+};
+
+const sortEventsDesc = (items: EventItem[]): EventItem[] =>
+  [...items].sort((a, b) => getEventTimestamp(b) - getEventTimestamp(a));
 
 const formatPoseConfidence = (meta?: EventMeta) => {
   const raw =
@@ -143,27 +114,6 @@ const formatIdleDuration = (meta?: EventMeta) => {
   return `${seconds} с`;
 };
 
-const extractPersonId = (meta?: EventMeta): string | undefined => {
-  if (!meta) return undefined;
-  const direct = meta.person_id;
-  if (typeof direct === 'string' && direct.trim()) {
-    return direct.trim();
-  }
-  const camelCased = (meta as Record<string, unknown>).personId;
-  if (typeof camelCased === 'string' && camelCased.trim()) {
-    return camelCased.trim();
-  }
-  return undefined;
-};
-
-const formatStatusTimestamp = (ts: string) => {
-  const date = new Date(ts);
-  if (Number.isNaN(date.getTime())) {
-    return 'Неизвестно';
-  }
-  return date.toLocaleString();
-};
-
 const EventsPage = () => {
   const { apiBase, normalizedApiBase, buildAbsoluteUrl } = useApiBase();
   const [events, setEvents] = useState<EventItem[]>([]);
@@ -172,8 +122,12 @@ const EventsPage = () => {
     const load = async () => {
       try {
         const response = await fetch(`${normalizedApiBase}/events`);
+        if (!response.ok) {
+          throw new Error(`Статус ответа ${response.status}`);
+        }
         const data = await response.json();
-        setEvents(Array.isArray(data?.events) ? data.events : []);
+        const rawEvents = Array.isArray(data?.events) ? (data.events as EventItem[]) : [];
+        setEvents(sortEventsDesc(rawEvents).slice(0, 200));
       } catch (err) {
         console.error('Не удалось получить события:', err);
       }
@@ -203,7 +157,7 @@ const EventsPage = () => {
             ? prev.filter(event => event.id !== nextEvent.id)
             : prev.filter(event => event.start_ts !== nextEvent.start_ts);
 
-          return [nextEvent, ...deduped].slice(0, 200);
+          return sortEventsDesc([nextEvent, ...deduped]).slice(0, 200);
         });
       } catch (err) {
         console.error('Не удалось обработать событие по WebSocket:', err);
@@ -214,32 +168,6 @@ const EventsPage = () => {
       ws.close();
     };
   }, [apiBase]);
-
-  const activityStatuses = useMemo<CurrentActivityStatus[]>(() => {
-    const map = new Map<string, CurrentActivityStatus>();
-
-    events.forEach(event => {
-      if (!isActivityEvent(event.type)) {
-        return;
-      }
-      const personId = extractPersonId(event.meta);
-      if (!personId) {
-        return;
-      }
-
-      if (!map.has(personId)) {
-        map.set(personId, {
-          personId,
-          status: event.type,
-          timestamp: event.start_ts,
-        });
-      }
-    });
-
-    const result = Array.from(map.values());
-    result.sort((a, b) => a.personId.localeCompare(b.personId, 'ru', { numeric: true, sensitivity: 'base' }));
-    return result;
-  }, [events]);
 
   const rows = useMemo(
     () =>
@@ -282,83 +210,6 @@ const EventsPage = () => {
       <p style={{ maxWidth: 640, color: '#475569' }}>
         Здесь отображаются последние детекции с камер видеонаблюдения. Новые события прилетают в режиме реального времени.
       </p>
-
-      <section style={{ marginBottom: 24 }}>
-        <div
-          style={{
-            background: '#fff',
-            border: '1px solid #e2e8f0',
-            borderRadius: 12,
-            padding: 16,
-            boxShadow: '0 8px 16px rgba(15,23,42,0.08)',
-          }}
-        >
-          <h2 style={{ marginTop: 0 }}>Текущий статус сотрудников</h2>
-          <p style={{ marginTop: 0, maxWidth: 640, color: '#475569' }}>
-            Ниже показано, чем сейчас заняты сотрудники по данным последнего события активности.
-            Цвет индикатора помогает мгновенно понять, кто работает, кто бездействует и кто отсутствует.
-          </p>
-          {activityStatuses.length > 0 ? (
-            <div
-              style={{
-                display: 'grid',
-                gap: 12,
-                gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-              }}
-            >
-              {activityStatuses.map(status => {
-                const config = ACTIVITY_STATE_CONFIG[status.status];
-                return (
-                  <div
-                    key={status.personId}
-                    style={{
-                      display: 'flex',
-                      gap: 12,
-                      alignItems: 'flex-start',
-                      borderRadius: 12,
-                      padding: 12,
-                      background: config.background,
-                      border: `1px solid ${config.color}33`,
-                    }}
-                  >
-                    <span
-                      aria-hidden="true"
-                      style={{
-                        display: 'inline-block',
-                        width: 14,
-                        height: 14,
-                        borderRadius: '50%',
-                        background: config.color,
-                        marginTop: 4,
-                      }}
-                    />
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 600, marginBottom: 4 }}>Сотрудник {status.personId}</div>
-                      <div style={{ color: config.color, fontWeight: 600 }}>{config.label}</div>
-                      <div style={{ color: '#475569', fontSize: 13, marginTop: 4 }}>{config.description}</div>
-                      <div style={{ color: '#64748b', fontSize: 12, marginTop: 6 }}>
-                        Обновлено: {formatStatusTimestamp(status.timestamp)}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div
-              style={{
-                padding: 16,
-                borderRadius: 12,
-                border: '1px dashed #cbd5f5',
-                color: '#64748b',
-                textAlign: 'center',
-              }}
-            >
-              Нет данных об активности сотрудников. Ожидаем новые события.
-            </div>
-          )}
-        </div>
-      </section>
 
       <section style={{ marginBottom: 24 }}>
         <div
