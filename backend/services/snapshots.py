@@ -53,20 +53,16 @@ def save_snapshot(img_bgr, ts: datetime, camera_name: str, event_type: str = "ev
         logger.info("Снимок сохранён: %s", path)
         dataset_path = DATASET_PHONE_USAGE_DIR / filename
         try:
-            dataset_saved = cv2.imwrite(str(dataset_path), img_bgr)
+            shutil.copy2(path, dataset_path)
         except Exception as exc:
             logger.warning(
-                "Исключение при сохранении снимка %s в датасет: %s", filename, exc
+                "Не удалось скопировать снимок %s в датасет по пути %s: %s",
+                filename,
+                dataset_path,
+                exc,
             )
         else:
-            if dataset_saved:
-                logger.debug("Снимок продублирован в датасет: %s", dataset_path)
-            else:
-                logger.warning(
-                    "Не удалось записать снимок %s в датасет по пути %s",
-                    filename,
-                    dataset_path,
-                )
+            logger.debug("Снимок продублирован в датасет: %s", dataset_path)
     else:
         logger.warning("Не удалось сохранить снимок %s", path)
     return f"/static/snaps/{filename}"
