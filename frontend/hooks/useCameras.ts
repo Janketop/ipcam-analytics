@@ -35,6 +35,25 @@ const toNumberOrNull = (value: unknown): number | null => {
   return null;
 };
 
+const toBoolean = (value: unknown, fallback: boolean): boolean => {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return value !== 0;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) {
+      return true;
+    }
+    if (['false', '0', 'no', 'n', 'off'].includes(normalized)) {
+      return false;
+    }
+  }
+  return fallback;
+};
+
 const parseStatus = (value: unknown): CameraStatus | undefined => {
   if (typeof value !== 'string') {
     return undefined;
@@ -95,10 +114,26 @@ const normalizeCamera = (raw: unknown): Camera | null => {
   const fps = toNumberOrNull(obj.fps);
   const uptimeSec = toNumberOrNull(obj.uptimeSec);
   const lastFrameTs = typeof obj.lastFrameTs === 'string' ? obj.lastFrameTs : null;
+  const rtspUrl =
+    typeof obj.rtspUrl === 'string'
+      ? obj.rtspUrl
+      : typeof (obj as Record<string, unknown>).rtsp_url === 'string'
+        ? ((obj as Record<string, unknown>).rtsp_url as string)
+        : '';
+  const detectPerson = toBoolean(obj.detectPerson ?? (obj as Record<string, unknown>).detect_person, true);
+  const detectCar = toBoolean(obj.detectCar ?? (obj as Record<string, unknown>).detect_car, true);
+  const captureEntryTime = toBoolean(
+    obj.captureEntryTime ?? (obj as Record<string, unknown>).capture_entry_time,
+    true,
+  );
 
   return {
     id,
     name,
+    rtspUrl,
+    detectPerson,
+    detectCar,
+    captureEntryTime,
     status,
     fps,
     uptimeSec,
@@ -195,6 +230,10 @@ export const useCameras = (apiBase: string) => {
             return [...prev, {
               id: mapped.cameraId,
               name: mapped.cameraName,
+              rtspUrl: '',
+              detectPerson: true,
+              detectCar: true,
+              captureEntryTime: true,
               status: mapped.status ?? DEFAULT_STATUS,
               fps: mapped.fps ?? null,
               uptimeSec: mapped.uptimeSec ?? null,

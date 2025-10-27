@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
@@ -20,9 +20,30 @@ class CameraCreateRequest(BaseModel):
 
     name: constr(strip_whitespace=True, min_length=1)  # type: ignore[valid-type]
     rtsp_url: AnyUrl
+    detect_person: bool = True
+    detect_car: bool = True
+    capture_entry_time: bool = True
 
     @validator("rtsp_url")
     def ensure_rtsp_scheme(cls, value: AnyUrl) -> AnyUrl:
+        if value.scheme.lower() != "rtsp":
+            raise ValueError("URL должен использовать схему rtsp")
+        return value
+
+
+class CameraUpdateRequest(BaseModel):
+    """Схема запроса на обновление настроек камеры."""
+
+    name: Optional[constr(strip_whitespace=True, min_length=1)]  # type: ignore[valid-type]
+    rtsp_url: Optional[AnyUrl]
+    detect_person: Optional[bool]
+    detect_car: Optional[bool]
+    capture_entry_time: Optional[bool]
+
+    @validator("rtsp_url")
+    def ensure_rtsp_scheme(cls, value: AnyUrl | None) -> AnyUrl | None:
+        if value is None:
+            return value
         if value.scheme.lower() != "rtsp":
             raise ValueError("URL должен использовать схему rtsp")
         return value
@@ -76,6 +97,18 @@ def _calc_status(worker, worker_info: Dict[str, Any] | None) -> str:
     return "online"
 
 
+def _camera_payload(camera: Camera) -> Dict[str, Any]:
+    return {
+        "id": camera.id,
+        "name": camera.name,
+        "rtspUrl": camera.rtsp_url,
+        "active": camera.active,
+        "detectPerson": camera.detect_person,
+        "detectCar": camera.detect_car,
+        "captureEntryTime": camera.capture_entry_time,
+    }
+
+
 @router.get("/cameras")
 def list_cameras(
     session: Session = Depends(get_session),
@@ -98,16 +131,16 @@ def list_cameras(
         worker = ingest.get_worker(camera.name) if ingest else None
         worker_info = workers_by_name.get(camera.name)
         normalized = _normalize_worker(worker_info)
-        items.append(
+        payload = _camera_payload(camera)
+        payload.update(
             {
-                "id": camera.id,
-                "name": camera.name,
                 "status": _calc_status(worker, worker_info),
                 "fps": normalized.get("fps"),
                 "lastFrameTs": normalized.get("last_frame_at"),
                 "uptimeSec": normalized.get("uptime_seconds"),
             }
         )
+        items.append(payload)
 
     return {"cameras": items}
 
@@ -156,21 +189,98 @@ def add_camera(
             detail="Камера с таким именем уже существует",
         )
 
-    camera = Camera(name=name, rtsp_url=str(payload.rtsp_url))
+    camera = Camera(
+        name=name,
+        rtsp_url=str(payload.rtsp_url),
+        detect_person=payload.detect_person,
+        detect_car=payload.detect_car,
+        capture_entry_time=payload.capture_entry_time,
+    )
     session.add(camera)
     session.commit()
     session.refresh(camera)
 
     ingest.start_worker_for_camera(camera)
 
-    return {
-        "camera": {
-            "id": camera.id,
-            "name": camera.name,
-            "rtsp_url": camera.rtsp_url,
-            "active": camera.active,
-        }
-    }
+    return {"camera": _camera_payload(camera)}
+
+
+@router.patch("/api/cameras/{camera_id}")
+def update_camera(
+    camera_id: int,
+    payload: CameraUpdateRequest,
+    session: Session = Depends(get_session),
+    ingest=Depends(get_ingest_manager),
+):
+    camera = session.query(Camera).filter(Camera.id == camera_id).first()
+    if camera is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Камера с указанным идентификатором не найдена",
+        )
+
+    updates = payload.dict(exclude_unset=True)
+    if not updates:
+        return {"camera": _camera_payload(camera)}
+
+    original_name = camera.name
+    original_rtsp = camera.rtsp_url
+    original_detect_person = camera.detect_person
+    original_detect_car = camera.detect_car
+    original_capture_entry_time = camera.capture_entry_time
+
+    new_name = updates.get("name")
+    if new_name:
+        name = new_name.strip()
+        if name != camera.name:
+            existing = (
+                session.query(Camera)
+                .filter(Camera.name == name, Camera.id != camera.id)
+                .first()
+            )
+            if existing is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Камера с таким именем уже существует",
+                )
+            camera.name = name
+
+    if "rtsp_url" in updates and updates["rtsp_url"] is not None:
+        camera.rtsp_url = str(updates["rtsp_url"])
+
+    for field in ("detect_person", "detect_car", "capture_entry_time"):
+        if field in updates and updates[field] is not None:
+            setattr(camera, field, bool(updates[field]))
+
+    session.add(camera)
+    session.commit()
+    session.refresh(camera)
+
+    if ingest:
+        name_changed = camera.name != original_name
+        rtsp_changed = camera.rtsp_url != original_rtsp
+        flags_changed = any(
+            [
+                camera.detect_person != original_detect_person,
+                camera.detect_car != original_detect_car,
+                camera.capture_entry_time != original_capture_entry_time,
+            ]
+        )
+
+        if name_changed or rtsp_changed:
+            ingest.stop_worker_for_camera(original_name)
+            if camera.active:
+                ingest.start_worker_for_camera(camera)
+        elif flags_changed and camera.active:
+            worker = ingest.get_worker(camera.name)
+            if worker is not None:
+                worker.update_flags(
+                    detect_person=camera.detect_person,
+                    detect_car=camera.detect_car,
+                    capture_entry_time=camera.capture_entry_time,
+                )
+
+    return {"camera": _camera_payload(camera)}
 
 
 @router.delete("/api/cameras/{camera_id}", status_code=status.HTTP_204_NO_CONTENT)
