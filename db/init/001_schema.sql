@@ -31,3 +31,26 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   resource TEXT NOT NULL,
   ts TIMESTAMPTZ DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS employees (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS face_samples (
+  id BIGSERIAL PRIMARY KEY,
+  event_id BIGINT UNIQUE REFERENCES events(id) ON DELETE CASCADE,
+  employee_id INT REFERENCES employees(id) ON DELETE SET NULL,
+  camera_id INT REFERENCES cameras(id) ON DELETE SET NULL,
+  snapshot_url TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'unverified',
+  candidate_key TEXT,
+  captured_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS face_samples_status_idx ON face_samples(status);
+CREATE INDEX IF NOT EXISTS face_samples_employee_idx ON face_samples(employee_id);
+CREATE INDEX IF NOT EXISTS face_samples_captured_idx ON face_samples(captured_at);

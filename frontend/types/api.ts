@@ -21,6 +21,28 @@ export type EventItem = {
   meta?: EventMeta;
 };
 
+export type Employee = {
+  id: number;
+  name: string;
+  sampleCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type FaceSampleStatus = 'unverified' | 'employee' | 'client' | 'discarded';
+
+export type FaceSample = {
+  id: number;
+  snapshotUrl: string;
+  status: FaceSampleStatus;
+  capturedAt: string;
+  updatedAt: string;
+  candidateKey?: string | null;
+  camera?: string | null;
+  eventId?: number | null;
+  employee?: { id: number; name: string } | null;
+};
+
 export type Stat = {
   type: string;
   cnt: number;
