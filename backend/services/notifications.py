@@ -8,21 +8,22 @@ from fastapi import WebSocket, WebSocketDisconnect
 from backend.core.logger import logger
 
 
-class EventBroadcaster:
-    """Простой менеджер подключений WebSocket."""
+class _BaseBroadcaster:
+    """Общий функционал для менеджеров WebSocket-подключений."""
 
-    def __init__(self) -> None:
+    def __init__(self, channel_name: str) -> None:
+        self._channel_name = channel_name
         self._clients: List[WebSocket] = []
 
     async def connect(self, websocket: WebSocket) -> None:
         await websocket.accept()
         self._clients.append(websocket)
-        logger.info("WebSocket %s подключен", websocket.client)
+        logger.info("[%s] WebSocket %s подключен", self._channel_name, websocket.client)
 
     def disconnect(self, websocket: WebSocket) -> None:
         if websocket in self._clients:
             self._clients.remove(websocket)
-            logger.info("WebSocket %s отключен", websocket.client)
+            logger.info("[%s] WebSocket %s отключен", self._channel_name, websocket.client)
 
     async def handle_connection(self, websocket: WebSocket) -> None:
         await self.connect(websocket)
@@ -30,7 +31,11 @@ class EventBroadcaster:
             while True:
                 await websocket.receive_text()
         except WebSocketDisconnect:
-            logger.warning("WebSocket %s разорвал соединение", websocket.client)
+            logger.warning(
+                "[%s] WebSocket %s разорвал соединение",
+                self._channel_name,
+                websocket.client,
+            )
         finally:
             self.disconnect(websocket)
 
@@ -39,5 +44,23 @@ class EventBroadcaster:
             try:
                 await ws.send_json(payload)
             except Exception:
-                logger.exception("Ошибка при отправке события по WebSocket %s", ws.client)
+                logger.exception(
+                    "[%s] Ошибка при отправке данных по WebSocket %s",
+                    self._channel_name,
+                    ws.client,
+                )
                 self.disconnect(ws)
+
+
+class EventBroadcaster(_BaseBroadcaster):
+    """Менеджер рассылки событий."""
+
+    def __init__(self) -> None:
+        super().__init__("events")
+
+
+class StatusBroadcaster(_BaseBroadcaster):
+    """Менеджер рассылки статусов камер."""
+
+    def __init__(self) -> None:
+        super().__init__("statuses")

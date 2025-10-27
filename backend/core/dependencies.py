@@ -6,13 +6,19 @@ from typing import Generator
 from fastapi import Request, WebSocket
 from sqlalchemy.orm import Session
 
-from backend.services.notifications import EventBroadcaster
+from backend.services.notifications import EventBroadcaster, StatusBroadcaster
 
 
 def _get_event_broadcaster(app) -> EventBroadcaster:
     """Возвращает менеджер рассылки событий из состояния приложения."""
 
     return app.state.event_broadcaster
+
+
+def _get_status_broadcaster(app) -> StatusBroadcaster:
+    """Возвращает менеджер рассылки статусов из состояния приложения."""
+
+    return app.state.status_broadcaster
 
 
 def get_session(request: Request) -> Generator[Session, None, None]:
@@ -44,3 +50,15 @@ def get_ws_broadcaster(websocket: WebSocket) -> EventBroadcaster:
     """Получает менеджер рассылки для WebSocket-подключения."""
 
     return _get_event_broadcaster(websocket.app)
+
+
+def get_status_broadcaster(request: Request) -> StatusBroadcaster:
+    """Получает менеджер рассылки статусов для HTTP-запроса."""
+
+    return _get_status_broadcaster(request.app)
+
+
+def get_ws_status_broadcaster(websocket: WebSocket) -> StatusBroadcaster:
+    """Получает менеджер рассылки статусов для WebSocket-подключения."""
+
+    return _get_status_broadcaster(websocket.app)
