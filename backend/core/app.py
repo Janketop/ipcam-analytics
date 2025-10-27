@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.core.config import settings
 from backend.core.database import get_session_factory
+from backend.core.logger import logger
 from backend.core.paths import STATIC_DIR
 from backend.services.ingest_manager import IngestManager
 from backend.services.notifications import EventBroadcaster
@@ -31,6 +32,7 @@ def _setup_cors(app: FastAPI) -> None:
 
 
 def create_app() -> FastAPI:
+    logger.info("Создание экземпляра FastAPI приложения")
     app = FastAPI(title=settings.app_title)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     _setup_cors(app)
@@ -55,4 +57,5 @@ def create_app() -> FastAPI:
     app.state.retention_days = settings.retention_days
     app.state.cleanup_interval_hours = settings.retention_cleanup_interval_hours
 
+    logger.info("Приложение подготовлено: face_blur=%s, retention=%d дней", settings.face_blur, settings.retention_days)
     return app

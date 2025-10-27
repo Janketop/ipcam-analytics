@@ -5,6 +5,7 @@ from typing import Awaitable, Callable, List, Optional
 
 from backend.core.config import settings
 from backend.core.database import SessionFactory
+from backend.core.logger import logger
 from backend.models import Camera
 from backend.services.ingest_worker import IngestWorker
 
@@ -36,6 +37,7 @@ class IngestManager:
             )
 
         face_blur = settings.face_blur
+        logger.info("Найдено %d активных камер для запуска", len(cameras))
         for camera in cameras:
             worker = IngestWorker(
                 self.session_factory,
@@ -48,10 +50,15 @@ class IngestManager:
             )
             worker.start()
             self.workers.append(worker)
+            logger.info("Ingest-воркер для камеры '%s' (#%s) запущен", camera.name, camera.id)
 
     def stop_all(self) -> None:
+        if not self.workers:
+            logger.info("Нет активных ingest-воркеров для остановки")
         for worker in self.workers:
             worker.stop_flag = True
+            logger.info("Отправлен сигнал остановки ingest-воркеру '%s'", worker.name)
+        logger.info("Все ingest-воркеры получили сигнал остановки")
 
     def get_worker(self, name: str):
         for worker in self.workers:
