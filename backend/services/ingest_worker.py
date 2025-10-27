@@ -14,10 +14,11 @@ import cv2
 from backend.core.config import settings
 from backend.core.database import SessionFactory
 from backend.core.logger import logger
-from backend.models import Event, FaceSample
+from backend.models import Event
 
 from backend.services.activity_detector import ActivityDetector
 from backend.services.ai_detector import AIDetector
+from backend.services.employee_recognizer import EmployeeRecognizer
 from backend.services.snapshots import prepare_snapshot, save_snapshot
 
 
@@ -75,6 +76,8 @@ class IngestWorker(Thread):
             detect_car=detect_car,
             capture_entry_time=capture_entry_time,
         )
+        self.employee_recognizer = self._init_employee_recognizer()
+        self.detector.set_employee_recognizer(self.employee_recognizer)
         self.activity_detector = ActivityDetector(idle_threshold=self.idle_alert_time)
         self.score_buffer: deque[float] = deque(maxlen=self.detector.score_smoothing)
         self.last_visual_jpeg: Optional[bytes] = None
@@ -133,6 +136,31 @@ class IngestWorker(Thread):
 
     def set_main_loop(self, loop):
         self.main_loop = loop
+
+    def _init_employee_recognizer(self) -> Optional[EmployeeRecognizer]:
+        try:
+            with self.session_factory() as session:
+                recognizer = EmployeeRecognizer.from_session(session)
+        except Exception:
+            logger.exception(
+                "[%s] Не удалось загрузить эталонные снимки сотрудников",
+                self.name,
+            )
+            return None
+
+        if recognizer is None:
+            logger.info(
+                "[%s] Эталонные снимки сотрудников отсутствуют", self.name
+            )
+            return None
+
+        logger.info(
+            "[%s] Подготовлен распознаватель сотрудников (%d снимков, %d сотрудников)",
+            self.name,
+            recognizer.sample_count,
+            recognizer.employee_count,
+        )
+        return recognizer
 
     def _submit_async(self, coro: Awaitable[None], payload_kind: str) -> None:
         if not self.main_loop or self.main_loop.is_closed():
