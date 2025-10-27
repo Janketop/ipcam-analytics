@@ -128,8 +128,7 @@ def cleanup_expired_events_and_snapshots(
         ).all()
 
         face_sample_rows = session.execute(
-            select(FaceSample.id, FaceSample.snapshot_url)
-            .where(
+            select(FaceSample.id, FaceSample.snapshot_url).where(
                 or_(
                     FaceSample.status.in_(FACE_SAMPLE_UNUSED_STATUSES),
                     and_(
@@ -138,8 +137,7 @@ def cleanup_expired_events_and_snapshots(
                     ),
                 )
             )
-            .all()
-        )
+        ).all()
 
     snapshot_events: Dict[str, List[int]] = defaultdict(list)
     for event_id, url in snapshot_rows:
