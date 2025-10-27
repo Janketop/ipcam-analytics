@@ -42,6 +42,11 @@ class IngestWorker(Thread):
         self.score_buffer: deque[float] = deque(maxlen=self.detector.score_smoothing)
         self.last_visual_jpeg: Optional[bytes] = None
 
+        self.worker_started_at: Optional[datetime] = None
+        self.last_frame_at: Optional[datetime] = None
+        self.frame_durations: deque[float] = deque(maxlen=120)
+        self._last_frame_monotonic: Optional[float] = None
+
         self.broadcaster = broadcaster
         self.main_loop = main_loop
 
@@ -56,9 +61,26 @@ class IngestWorker(Thread):
 
     def runtime_status(self) -> dict:
         info = self.detector.runtime_status()
-        info.update({
-            "visualize_enabled": bool(self.visualize),
-        })
+        now = datetime.now(timezone.utc)
+        uptime_seconds: Optional[float] = None
+        if self.worker_started_at is not None:
+            uptime_seconds = max((now - self.worker_started_at).total_seconds(), 0.0)
+
+        fps: Optional[float] = None
+        if self.frame_durations:
+            avg_duration = sum(self.frame_durations) / len(self.frame_durations)
+            if avg_duration > 0:
+                fps = 1.0 / avg_duration
+
+        info.update(
+            {
+                "visualize_enabled": bool(self.visualize),
+                "started_at": self.worker_started_at.isoformat() if self.worker_started_at else None,
+                "last_frame_at": self.last_frame_at.isoformat() if self.last_frame_at else None,
+                "uptime_seconds": uptime_seconds,
+                "fps": fps,
+            }
+        )
         return info
 
     def run(self) -> None:  # noqa: C901
@@ -67,6 +89,9 @@ class IngestWorker(Thread):
         fps_skip = settings.ingest_fps_skip
         flush_timeout = settings.ingest_flush_timeout
 
+        self.worker_started_at = datetime.now(timezone.utc)
+        self._last_frame_monotonic = None
+        self.frame_durations.clear()
         logger.info("[%s] Ingest-воркер запущен", self.name)
         while not self.stop_flag:
             cap = cv2.VideoCapture(self.url)
@@ -152,6 +177,12 @@ class IngestWorker(Thread):
                     frame = latest_frame
 
                 phone_usage_raw, conf_raw, snapshot_img, vis, car_events = self.detector.process_frame(frame)
+
+                frame_processed_monotonic = time.monotonic()
+                if self._last_frame_monotonic is not None:
+                    self.frame_durations.append(frame_processed_monotonic - self._last_frame_monotonic)
+                self._last_frame_monotonic = frame_processed_monotonic
+                self.last_frame_at = datetime.now(timezone.utc)
 
                 self.score_buffer.append(conf_raw)
                 smoothed_conf = max(self.score_buffer) if self.score_buffer else conf_raw

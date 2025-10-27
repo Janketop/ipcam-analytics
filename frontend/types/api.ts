@@ -32,6 +32,10 @@ export type RuntimeWorker = {
   visualize_enabled: boolean;
   device_error?: string | null;
   gpu_unavailable_reason?: string | null;
+  started_at?: string | null;
+  last_frame_at?: string | null;
+  uptime_seconds?: number | null;
+  fps?: number | null;
 };
 
 export type RuntimeSystem = {
@@ -45,7 +49,16 @@ export type RuntimeSystem = {
   cuda_visible_devices?: string | null;
 };
 
+export type RuntimeSummary = {
+  total_workers: number;
+  alive_workers: number;
+  avg_fps?: number | null;
+  max_uptime_seconds?: number | null;
+  latest_frame_at?: string | null;
+};
+
 export type RuntimeInfo = {
   system: RuntimeSystem;
   workers: RuntimeWorker[];
+  summary?: RuntimeSummary;
 };
