@@ -5,6 +5,10 @@ export type EventMeta = {
   head_angle?: number | null;
   hands_motion?: number | null;
   duration_idle_sec?: number | null;
+  duration_away_sec?: number | null;
+  head_motion?: number | null;
+  movement_score?: number | null;
+  person_id?: string | null;
 };
 
 export type EventItem = {
