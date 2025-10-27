@@ -1,6 +1,7 @@
 """Менеджер потоков захвата и обработки видеопотоков."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Awaitable, Callable, List, Optional
 
 from backend.core.config import settings
@@ -119,6 +120,26 @@ class IngestManager:
     def runtime_status(self) -> dict:
         workers = [worker.runtime_status() for worker in self.workers]
 
+        alive_workers = sum(1 for worker in self.workers if worker.is_alive())
+        fps_values = [w.get("fps") for w in workers if isinstance(w.get("fps"), (int, float))]
+        uptime_values = [w.get("uptime_seconds") for w in workers if isinstance(w.get("uptime_seconds"), (int, float))]
+        last_frames: List[datetime] = []
+        for w in workers:
+            last_frame_at = w.get("last_frame_at")
+            if isinstance(last_frame_at, str):
+                try:
+                    last_frames.append(datetime.fromisoformat(last_frame_at))
+                except ValueError:
+                    continue
+
+        summary = {
+            "total_workers": len(self.workers),
+            "alive_workers": alive_workers,
+            "avg_fps": sum(fps_values) / len(fps_values) if fps_values else None,
+            "max_uptime_seconds": max(uptime_values) if uptime_values else None,
+            "latest_frame_at": max(last_frames).isoformat() if last_frames else None,
+        }
+
         try:
             import torch
         except Exception:  # pragma: no cover
@@ -160,4 +181,5 @@ class IngestManager:
         return {
             "system": system,
             "workers": workers,
+            "summary": summary,
         }
