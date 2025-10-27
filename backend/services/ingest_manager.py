@@ -1,7 +1,8 @@
 """Менеджер потоков захвата и обработки видеопотоков."""
 from __future__ import annotations
 
-from datetime import datetime
+import asyncio
+from datetime import datetime, timezone
 from typing import Awaitable, Callable, List, Optional
 
 from backend.core.config import settings
@@ -16,12 +17,18 @@ class IngestManager:
         self.session_factory = session_factory
         self.workers: List[IngestWorker] = []
         self.broadcaster: Optional[Callable[[dict], Awaitable[None]]] = None
+        self.status_broadcaster: Optional[Callable[[dict], Awaitable[None]]] = None
         self.main_loop = main_loop
 
     def set_broadcaster(self, fn: Callable[[dict], Awaitable[None]]) -> None:
         self.broadcaster = fn
         for worker in self.workers:
             worker.set_broadcaster(fn)
+
+    def set_status_broadcaster(self, fn: Callable[[dict], Awaitable[None]]) -> None:
+        self.status_broadcaster = fn
+        for worker in self.workers:
+            worker.set_status_broadcaster(fn)
 
     def set_main_loop(self, loop) -> None:
         self.main_loop = loop
@@ -79,6 +86,7 @@ class IngestManager:
             camera.rtsp_url,
             face_blur=face_blur,
             broadcaster=self.broadcaster,
+            status_broadcaster=self.status_broadcaster,
             main_loop=self.main_loop,
         )
         worker.start()
@@ -115,6 +123,7 @@ class IngestManager:
         except ValueError:
             pass
 
+        self._notify_offline(worker)
         return True
 
     def runtime_status(self) -> dict:
@@ -183,3 +192,47 @@ class IngestManager:
             "workers": workers,
             "summary": summary,
         }
+
+    def _notify_offline(self, worker: IngestWorker) -> None:
+        if not self.status_broadcaster or not self.main_loop or self.main_loop.is_closed():
+            return
+
+        payload = {
+            "cameraId": worker.cam_id,
+            "camera": worker.name,
+            "status": "offline",
+            "fps": None,
+            "lastFrameTs": None,
+            "uptimeSec": None,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self.status_broadcaster(payload),
+                self.main_loop,
+            )
+        except (RuntimeError, ValueError) as exc:
+            logger.warning(
+                "Не удалось отправить финальный статус камеры %s: %s",
+                worker.name,
+                exc,
+            )
+            return
+
+        def _finalize(fut: asyncio.Future) -> None:
+            try:
+                fut.result()
+            except (asyncio.CancelledError, RuntimeError) as exc:
+                logger.warning(
+                    "Рассылка финального статуса для камеры %s была прервана: %s",
+                    worker.name,
+                    exc,
+                )
+            except Exception:
+                logger.exception(
+                    "Ошибка при завершении отправки финального статуса камеры %s",
+                    worker.name,
+                )
+
+        future.add_done_callback(_finalize)

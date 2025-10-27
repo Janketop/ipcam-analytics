@@ -28,6 +28,7 @@ class IngestWorker(Thread):
         rtsp_url: str,
         face_blur: bool = True,
         broadcaster: Optional[Callable[[dict], Awaitable[None]]] = None,
+        status_broadcaster: Optional[Callable[[dict], Awaitable[None]]] = None,
         main_loop: Optional[asyncio.AbstractEventLoop] = None,
     ) -> None:
         super().__init__(daemon=True)
@@ -48,16 +49,128 @@ class IngestWorker(Thread):
         self._last_frame_monotonic: Optional[float] = None
 
         self.broadcaster = broadcaster
+        self.status_broadcaster = status_broadcaster
         self.main_loop = main_loop
 
         self.phone_score_threshold = self.detector.phone_score_threshold
         self.phone_active_until: Optional[datetime] = None
 
+        self.status_interval = settings.ingest_status_interval
+        self.status_stale_seconds = settings.ingest_status_stale_threshold
+        self._last_status_sent_monotonic: Optional[float] = None
+
     def set_broadcaster(self, fn):
         self.broadcaster = fn
 
+    def set_status_broadcaster(self, fn):
+        self.status_broadcaster = fn
+
     def set_main_loop(self, loop):
         self.main_loop = loop
+
+    def _submit_async(self, coro: Awaitable[None], payload_kind: str) -> None:
+        if not self.main_loop or self.main_loop.is_closed():
+            return
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(coro, self.main_loop)
+        except (RuntimeError, ValueError) as exc:
+            logger.warning(
+                "[%s] Не удалось отправить %s подписчикам: %s",
+                self.name,
+                payload_kind,
+                exc,
+            )
+            return
+
+        def _finalize(fut: asyncio.Future) -> None:
+            try:
+                fut.result()
+            except (asyncio.CancelledError, RuntimeError) as exc:
+                logger.warning(
+                    "[%s] Рассылка %s была прервана: %s",
+                    self.name,
+                    payload_kind,
+                    exc,
+                )
+            except Exception:
+                logger.exception(
+                    "[%s] Ошибка при завершении рассылки %s",
+                    self.name,
+                    payload_kind,
+                )
+
+        future.add_done_callback(_finalize)
+
+    def _determine_status(self, now: datetime, runtime: dict) -> str:
+        if self.stop_flag:
+            return "stopping"
+
+        last_frame_iso = runtime.get("last_frame_at")
+        last_frame_at: Optional[datetime] = None
+        if isinstance(last_frame_iso, str):
+            try:
+                last_frame_at = datetime.fromisoformat(last_frame_iso)
+            except ValueError:
+                last_frame_at = None
+
+        if last_frame_at is None:
+            return "starting"
+
+        if last_frame_at.tzinfo is None:
+            last_frame_at = last_frame_at.replace(tzinfo=timezone.utc)
+
+        delta = now - last_frame_at.astimezone(timezone.utc)
+        if delta.total_seconds() > self.status_stale_seconds:
+            return "no_signal"
+
+        return "online"
+
+    def _broadcast_status(
+        self,
+        *,
+        force: bool = False,
+        override_status: Optional[str] = None,
+    ) -> None:
+        if not self.status_broadcaster:
+            return
+
+        now_monotonic = time.monotonic()
+        if (
+            not force
+            and self.status_interval > 0
+            and self._last_status_sent_monotonic is not None
+            and now_monotonic - self._last_status_sent_monotonic < self.status_interval
+        ):
+            return
+
+        runtime = self.runtime_status()
+        now = datetime.now(timezone.utc)
+        status = override_status or self._determine_status(now, runtime)
+        payload = {
+            "cameraId": self.cam_id,
+            "camera": self.name,
+            "status": status,
+            "fps": runtime.get("fps"),
+            "lastFrameTs": runtime.get("last_frame_at"),
+            "uptimeSec": runtime.get("uptime_seconds"),
+            "ts": now.isoformat(),
+        }
+
+        if status == "offline":
+            payload.update({"fps": None, "lastFrameTs": None, "uptimeSec": None})
+
+        try:
+            coro = self.status_broadcaster(payload)
+        except Exception:
+            logger.exception(
+                "[%s] Ошибка при подготовке данных статуса для рассылки",
+                self.name,
+            )
+            return
+
+        self._last_status_sent_monotonic = now_monotonic
+        self._submit_async(coro, "статуса")
 
     def runtime_status(self) -> dict:
         info = self.detector.runtime_status()
@@ -93,7 +206,9 @@ class IngestWorker(Thread):
         self._last_frame_monotonic = None
         self.frame_durations.clear()
         logger.info("[%s] Ingest-воркер запущен", self.name)
+        self._broadcast_status(force=True)
         while not self.stop_flag:
+            self._broadcast_status()
             cap = cv2.VideoCapture(self.url)
             try:
                 if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
@@ -111,6 +226,7 @@ class IngestWorker(Thread):
                     self.name,
                     reconnect_delay,
                 )
+                self._broadcast_status(force=True)
                 cap.release()
                 time.sleep(reconnect_delay)
                 continue
@@ -121,6 +237,7 @@ class IngestWorker(Thread):
             reconnect_needed = False
 
             while not self.stop_flag:
+                self._broadcast_status()
                 ok, frame = cap.read()
                 if not ok:
                     failed_reads += 1
@@ -131,6 +248,7 @@ class IngestWorker(Thread):
                             self.name,
                             reconnect_delay,
                         )
+                        self._broadcast_status(force=True)
                         break
                     time.sleep(0.2)
                     continue
@@ -153,11 +271,13 @@ class IngestWorker(Thread):
                                 self.name,
                                 reconnect_delay,
                             )
+                            self._broadcast_status(force=True)
                             break
                         time.sleep(0.2)
                         break
                     grabbed_any = True
                 if reconnect_needed:
+                    self._broadcast_status(force=True)
                     break
 
                 if grabbed_any:
@@ -171,6 +291,7 @@ class IngestWorker(Thread):
                                 self.name,
                                 reconnect_delay,
                             )
+                            self._broadcast_status(force=True)
                             break
                         time.sleep(0.2)
                         continue
@@ -268,8 +389,6 @@ class IngestWorker(Thread):
                                 }
                             )
                         session.commit()
-                else:
-                    persisted_events = []
                 for stored in persisted_events:
                     logger.info(
                         "[%s] Зафиксировано событие %s (уверенность %.2f, данные %s)",
@@ -278,45 +397,26 @@ class IngestWorker(Thread):
                         stored["confidence"],
                         stored["meta"],
                     )
-                    if self.broadcaster and self.main_loop and not self.main_loop.is_closed():
+                    if self.broadcaster:
                         try:
-                            future = asyncio.run_coroutine_threadsafe(
-                                self.broadcaster(
-                                    {
-                                        "id": stored["id"],
-                                        "camera": stored["camera"],
-                                        "type": stored["type"],
-                                        "start_ts": stored["start_ts"].isoformat(),
-                                        "confidence": stored["confidence"],
-                                        "snapshot_url": stored["snapshot_url"],
-                                        "meta": stored["meta"],
-                                    }
-                                ),
-                                self.main_loop,
+                            coro = self.broadcaster(
+                                {
+                                    "id": stored["id"],
+                                    "camera": stored["camera"],
+                                    "type": stored["type"],
+                                    "start_ts": stored["start_ts"].isoformat(),
+                                    "confidence": stored["confidence"],
+                                    "snapshot_url": stored["snapshot_url"],
+                                    "meta": stored["meta"],
+                                }
                             )
-
-                            def _finalize(fut):
-                                try:
-                                    fut.result()
-                                except (asyncio.CancelledError, RuntimeError) as exc:
-                                    logger.warning(
-                                        "[%s] Рассылка события была прервана: %s",
-                                        self.name,
-                                        exc,
-                                    )
-                                except Exception:
-                                    logger.exception(
-                                        "[%s] Ошибка при завершении рассылки события",
-                                        self.name,
-                                    )
-
-                            future.add_done_callback(_finalize)
-                        except (RuntimeError, ValueError) as exc:
-                            logger.warning(
-                                "[%s] Не удалось отправить событие подписчикам: %s",
+                        except Exception:
+                            logger.exception(
+                                "[%s] Ошибка при подготовке события для рассылки",
                                 self.name,
-                                exc,
                             )
+                        else:
+                            self._submit_async(coro, "события")
 
             cap.release()
             if self.stop_flag:
@@ -331,6 +431,7 @@ class IngestWorker(Thread):
                 time.sleep(reconnect_delay)
 
         logger.info("[%s] Ingest-воркер остановлен", self.name)
+        self._broadcast_status(force=True, override_status="offline")
 
     def get_visual_frame_jpeg(self):
         return self.last_visual_jpeg
