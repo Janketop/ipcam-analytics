@@ -18,6 +18,23 @@ _ENV_FILES: Tuple[str, ...] = (
 )
 
 
+def _split_env_list(raw: str) -> List[str]:
+    """Разбивает строку окружения в более гибком формате.
+
+    Поддерживаются разделители запятая, точка с запятой и перевод строки.
+    Это позволяет описывать списки как в одну строку, так и в виде
+    «один элемент на строку», что часто встречается в `.env`-файлах.
+    Пустые элементы и лишние пробелы автоматически отбрасываются.
+    """
+
+    if not raw:
+        return []
+
+    normalized = raw.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = normalized.replace("\n", ",").replace(";", ",")
+    return [item.strip() for item in normalized.split(",") if item.strip()]
+
+
 class Settings(BaseSettings):
     """Глобальные настройки сервиса, считываемые из .env и окружения."""
 
@@ -97,7 +114,7 @@ class Settings(BaseSettings):
         """Возвращает итоговый набор разрешённых Origin для CORS."""
 
         raw = self.frontend_origins or self.frontend_url or ""
-        origins = {origin.strip() for origin in raw.split(",") if origin.strip()}
+        origins = set(_split_env_list(raw))
         origins.update({"http://localhost:3000", "http://127.0.0.1:3000"})
         return origins
 
@@ -106,7 +123,9 @@ class Settings(BaseSettings):
 
         Если имя не указано, генерируется стабильное имя вида ``cam1``,
         ``cam2`` и т.д., чтобы оно не менялось между перезапусками сервиса.
-        Также исключаются пустые элементы и дублирование случайных пробелов.
+        Также исключаются пустые элементы и дублирование случайных пробелов,
+        поддерживаются разные разделители (запятая, точка с запятой, перенос
+        строки), чтобы конфигурация была читабельной даже для длинных списков.
         """
 
         if not self.rtsp_sources.strip():
@@ -124,10 +143,7 @@ class Settings(BaseSettings):
                 if candidate not in used_names:
                     return candidate
 
-        for item in self.rtsp_sources.split(","):
-            chunk = item.strip()
-            if not chunk:
-                continue
+        for chunk in _split_env_list(self.rtsp_sources):
             name: Optional[str]
             url: str
             if "|" in chunk:
