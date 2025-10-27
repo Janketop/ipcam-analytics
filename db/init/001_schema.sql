@@ -3,6 +3,9 @@ CREATE TABLE IF NOT EXISTS cameras (
   name TEXT NOT NULL UNIQUE,
   rtsp_url TEXT NOT NULL,
   active BOOLEAN DEFAULT TRUE,
+  detect_person BOOLEAN DEFAULT TRUE,
+  detect_car BOOLEAN DEFAULT TRUE,
+  capture_entry_time BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 

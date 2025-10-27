@@ -14,14 +14,31 @@ const CamerasPage = () => {
   const [formSuccess, setFormSuccess] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [removingCameraId, setRemovingCameraId] = useState<number | null>(null);
+  const [detectPersonEnabled, setDetectPersonEnabled] = useState(true);
+  const [detectCarEnabled, setDetectCarEnabled] = useState(true);
+  const [captureEntryTimeEnabled, setCaptureEntryTimeEnabled] = useState(true);
+  const [editingCameraId, setEditingCameraId] = useState<number | null>(null);
 
-  const toggleForm = useCallback(() => {
-    setIsFormOpen(prev => !prev);
-    setFormError(null);
-    setFormSuccess(null);
+  const resetFormFields = useCallback(() => {
+    setNewCameraName('');
+    setNewCameraUrl('');
+    setDetectPersonEnabled(true);
+    setDetectCarEnabled(true);
+    setCaptureEntryTimeEnabled(true);
+    setEditingCameraId(null);
   }, []);
 
-  const handleAddCamera = useCallback(async (event: FormEvent<HTMLFormElement>) => {
+  const toggleForm = useCallback(() => {
+    setFormError(null);
+    setFormSuccess(null);
+    setIsFormOpen(prev => {
+      const next = !prev;
+      resetFormFields();
+      return next;
+    });
+  }, [resetFormFields]);
+
+  const handleSubmitCamera = useCallback(async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
     const name = newCameraName.trim();
@@ -38,19 +55,26 @@ const CamerasPage = () => {
     setFormSuccess(null);
 
     try {
-      const response = await fetch(`${normalizedApiBase}/api/cameras/add`, {
-        method: 'POST',
+      const endpoint = editingCameraId
+        ? `${normalizedApiBase}/api/cameras/${editingCameraId}`
+        : `${normalizedApiBase}/api/cameras/add`;
+      const method = editingCameraId ? 'PATCH' : 'POST';
+      const response = await fetch(endpoint, {
+        method,
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           name,
           rtsp_url: url,
+          detect_person: detectPersonEnabled,
+          detect_car: detectCarEnabled,
+          capture_entry_time: captureEntryTimeEnabled,
         }),
       });
 
       if (!response.ok) {
-        let detail = 'Не удалось добавить камеру.';
+        let detail = 'Не удалось сохранить камеру.';
         try {
           const data = await response.json();
           if (data?.detail) {
@@ -71,12 +95,57 @@ const CamerasPage = () => {
         throw new Error('Сервер вернул неожиданный ответ.');
       }
 
+      const updatedCameraId = Number(created.id);
+      const rtspUrl =
+        typeof created.rtspUrl === 'string'
+          ? created.rtspUrl
+          : typeof created.rtsp_url === 'string'
+            ? (created.rtsp_url as string)
+            : '';
+      const detectPerson =
+        typeof created.detectPerson === 'boolean'
+          ? created.detectPerson
+          : typeof created.detect_person === 'boolean'
+            ? created.detect_person
+            : true;
+      const detectCar =
+        typeof created.detectCar === 'boolean'
+          ? created.detectCar
+          : typeof created.detect_car === 'boolean'
+            ? created.detect_car
+            : true;
+      const captureEntryTime =
+        typeof created.captureEntryTime === 'boolean'
+          ? created.captureEntryTime
+          : typeof created.capture_entry_time === 'boolean'
+            ? created.capture_entry_time
+            : true;
+
       setCameras(prev => {
+        if (editingCameraId != null) {
+          return prev.map(camera =>
+            camera.id === updatedCameraId
+              ? {
+                  ...camera,
+                  name: String(created.name),
+                  rtspUrl,
+                  detectPerson,
+                  detectCar,
+                  captureEntryTime,
+                }
+              : camera,
+          );
+        }
+
         const next = [
           ...prev,
           {
-            id: Number(created.id),
+            id: updatedCameraId,
             name: String(created.name),
+            rtspUrl,
+            detectPerson,
+            detectCar,
+            captureEntryTime,
             status: 'starting' as CameraStatus,
             fps: null,
             lastFrameTs: null,
@@ -85,16 +154,57 @@ const CamerasPage = () => {
         ];
         return next.sort((a, b) => a.id - b.id);
       });
-      setNewCameraName('');
-      setNewCameraUrl('');
-      setFormSuccess(`Камера «${created.name}» успешно добавлена.`);
+
+      const successMessage =
+        editingCameraId != null
+          ? `Настройки камеры «${created.name}» обновлены.`
+          : `Камера «${created.name}» успешно добавлена.`;
+      setFormSuccess(successMessage);
+      resetFormFields();
       setIsFormOpen(false);
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : 'Произошла ошибка при добавлении камеры.');
+      setFormError(err instanceof Error ? err.message : 'Произошла ошибка при сохранении камеры.');
     } finally {
       setIsSubmitting(false);
     }
-  }, [newCameraName, newCameraUrl, normalizedApiBase, setCameras]);
+  }, [
+    newCameraName,
+    newCameraUrl,
+    detectPersonEnabled,
+    detectCarEnabled,
+    captureEntryTimeEnabled,
+    normalizedApiBase,
+    setCameras,
+    editingCameraId,
+    resetFormFields,
+  ]);
+
+  const handleEditCamera = useCallback(
+    (cameraId: number) => {
+      const target = cameras.find(camera => camera.id === cameraId);
+      if (!target) {
+        return;
+      }
+
+      setFormError(null);
+      setFormSuccess(null);
+      setEditingCameraId(target.id);
+      setNewCameraName(target.name);
+      setNewCameraUrl(target.rtspUrl);
+      setDetectPersonEnabled(Boolean(target.detectPerson));
+      setDetectCarEnabled(Boolean(target.detectCar));
+      setCaptureEntryTimeEnabled(Boolean(target.captureEntryTime));
+      setIsFormOpen(true);
+    },
+    [cameras],
+  );
+
+  const handleCancelEdit = useCallback(() => {
+    resetFormFields();
+    setIsFormOpen(false);
+    setFormError(null);
+    setFormSuccess(null);
+  }, [resetFormFields]);
 
   const handleDeleteCamera = useCallback(async (cameraId: number, cameraName: string) => {
     if (typeof window !== 'undefined') {
@@ -131,12 +241,16 @@ const CamerasPage = () => {
 
       setCameras(prev => prev.filter(camera => camera.id !== cameraId));
       setFormSuccess(`Камера «${cameraName}» удалена.`);
+      if (editingCameraId === cameraId) {
+        resetFormFields();
+        setIsFormOpen(false);
+      }
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Произошла ошибка при удалении камеры.');
     } finally {
       setRemovingCameraId(null);
     }
-  }, [normalizedApiBase, setCameras]);
+  }, [normalizedApiBase, setCameras, editingCameraId, resetFormFields]);
 
   const formatFps = (fps?: number | null) => {
     if (typeof fps !== 'number' || !Number.isFinite(fps)) {
@@ -239,6 +353,32 @@ const CamerasPage = () => {
     );
   };
 
+  const renderFeatureChip = (label: string, enabled: boolean) => {
+    const palette = enabled
+      ? { background: '#dcfce7', color: '#166534', border: '#bbf7d0' }
+      : { background: '#fee2e2', color: '#b91c1c', border: '#fecaca' };
+    const valueLabel = enabled ? 'ВКЛ' : 'ВЫКЛ';
+    return (
+      <span
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '4px 8px',
+          borderRadius: 999,
+          border: `1px solid ${palette.border}`,
+          background: palette.background,
+          color: palette.color,
+          fontWeight: 600,
+          fontSize: 12,
+          letterSpacing: 0.4,
+        }}
+      >
+        {label}: {valueLabel}
+      </span>
+    );
+  };
+
   return (
     <Layout title="IP-CAM Analytics — Камеры">
       <h1>Управление камерами</h1>
@@ -261,13 +401,17 @@ const CamerasPage = () => {
             cursor: 'pointer',
           }}
         >
-          {isFormOpen ? 'Закрыть форму' : 'Добавить камеру'}
+          {isFormOpen
+            ? editingCameraId != null
+              ? 'Скрыть редактирование'
+              : 'Закрыть форму'
+            : 'Добавить камеру'}
         </button>
       </div>
 
       {isFormOpen && (
         <form
-          onSubmit={handleAddCamera}
+          onSubmit={handleSubmitCamera}
           style={{
             display: 'grid',
             gap: 12,
@@ -281,6 +425,21 @@ const CamerasPage = () => {
             marginBottom: 24,
           }}
         >
+          {editingCameraId != null && (
+            <div
+              style={{
+                gridColumn: '1 / -1',
+                background: '#f1f5f9',
+                borderRadius: 8,
+                padding: '8px 12px',
+                fontSize: 13,
+                color: '#0f172a',
+                fontWeight: 600,
+              }}
+            >
+              Редактирование камеры №{editingCameraId}
+            </div>
+          )}
           <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <span style={{ fontSize: 14, color: '#0f172a', fontWeight: 600 }}>Название камеры</span>
             <input
@@ -319,22 +478,101 @@ const CamerasPage = () => {
               }}
             />
           </label>
-          <button
-            type="submit"
-            disabled={isSubmitting}
+          <div
             style={{
-              padding: '10px 16px',
-              borderRadius: 8,
-              border: 'none',
-              background: isSubmitting ? '#94a3b8' : '#0f766e',
-              color: '#fff',
-              cursor: isSubmitting ? 'wait' : 'pointer',
-              fontWeight: 600,
-              minHeight: 40,
+              gridColumn: '1 / -1',
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 12,
+              alignItems: 'center',
             }}
           >
-            {isSubmitting ? 'Добавляем…' : 'Сохранить'}
-          </button>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, color: '#0f172a' }}>
+              <input
+                type="checkbox"
+                checked={detectPersonEnabled}
+                onChange={event => {
+                  setDetectPersonEnabled(event.target.checked);
+                  setFormError(null);
+                  setFormSuccess(null);
+                }}
+              />
+              Детектировать использование телефонов
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, color: '#0f172a' }}>
+              <input
+                type="checkbox"
+                checked={detectCarEnabled}
+                onChange={event => {
+                  setDetectCarEnabled(event.target.checked);
+                  setFormError(null);
+                  setFormSuccess(null);
+                }}
+              />
+              Отслеживать въезд автомобилей
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, color: '#0f172a' }}>
+              <input
+                type="checkbox"
+                checked={captureEntryTimeEnabled}
+                onChange={event => {
+                  setCaptureEntryTimeEnabled(event.target.checked);
+                  setFormError(null);
+                  setFormSuccess(null);
+                }}
+              />
+              Сохранять отметку времени въезда
+            </label>
+          </div>
+          <div
+            style={{
+              gridColumn: '1 / -1',
+              display: 'flex',
+              gap: 12,
+              flexWrap: 'wrap',
+            }}
+          >
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              style={{
+                padding: '10px 16px',
+                borderRadius: 8,
+                border: 'none',
+                background: isSubmitting ? '#94a3b8' : '#0f766e',
+                color: '#fff',
+                cursor: isSubmitting ? 'wait' : 'pointer',
+                fontWeight: 600,
+                minHeight: 40,
+              }}
+            >
+              {isSubmitting
+                ? editingCameraId != null
+                  ? 'Сохраняем…'
+                  : 'Добавляем…'
+                : editingCameraId != null
+                  ? 'Сохранить изменения'
+                  : 'Сохранить'}
+            </button>
+            {editingCameraId != null && (
+              <button
+                type="button"
+                onClick={handleCancelEdit}
+                style={{
+                  padding: '10px 16px',
+                  borderRadius: 8,
+                  border: '1px solid #cbd5f5',
+                  background: '#f8fafc',
+                  color: '#0f172a',
+                  cursor: 'pointer',
+                  fontWeight: 600,
+                  minHeight: 40,
+                }}
+              >
+                Отмена
+              </button>
+            )}
+          </div>
         </form>
       )}
 
@@ -467,6 +705,18 @@ const CamerasPage = () => {
                   <th
                     style={{
                       padding: '12px 16px',
+                      textAlign: 'left',
+                      fontSize: 13,
+                      fontWeight: 700,
+                      color: '#0f172a',
+                      borderBottom: '1px solid #e2e8f0',
+                    }}
+                  >
+                    Функции
+                  </th>
+                  <th
+                    style={{
+                      padding: '12px 16px',
                       textAlign: 'center',
                       fontSize: 13,
                       fontWeight: 700,
@@ -493,6 +743,7 @@ const CamerasPage = () => {
               <tbody>
                 {cameras.map(camera => {
                   const isRemoving = removingCameraId === camera.id;
+                  const isEditingThis = editingCameraId === camera.id;
                   return (
                     <tr key={camera.id} style={{ borderBottom: '1px solid #e2e8f0' }}>
                       <td style={{ padding: '14px 16px', verticalAlign: 'middle' }}>
@@ -508,25 +759,51 @@ const CamerasPage = () => {
                       <td style={{ padding: '14px 16px', textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>
                         {formatUptime(camera.uptimeSec)}
                       </td>
+                      <td style={{ padding: '14px 16px' }}>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                          {renderFeatureChip('Телефоны', Boolean(camera.detectPerson))}
+                          {renderFeatureChip('Авто', Boolean(camera.detectCar))}
+                          {renderFeatureChip('Время въезда', Boolean(camera.captureEntryTime))}
+                        </div>
+                      </td>
                       <td style={{ padding: '14px 16px', textAlign: 'center' }}>{renderStatusBadge(camera.status)}</td>
                       <td style={{ padding: '14px 16px', textAlign: 'right' }}>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteCamera(camera.id, camera.name)}
-                          disabled={isRemoving}
-                          style={{
-                            padding: '6px 12px',
-                            borderRadius: 6,
-                            border: '1px solid #fca5a5',
-                            background: isRemoving ? '#fecaca' : '#fee2e2',
-                            color: '#b91c1c',
-                            cursor: isRemoving ? 'wait' : 'pointer',
-                            fontWeight: 600,
-                            minWidth: 100,
-                          }}
-                        >
-                          {isRemoving ? 'Удаляем…' : 'Удалить'}
-                        </button>
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
+                          <button
+                            type="button"
+                            onClick={() => handleEditCamera(camera.id)}
+                            disabled={isRemoving}
+                            style={{
+                              padding: '6px 12px',
+                              borderRadius: 6,
+                              border: '1px solid #2563eb',
+                              background: isEditingThis ? '#2563eb' : '#e0f2fe',
+                              color: isEditingThis ? '#fff' : '#0f172a',
+                              cursor: isRemoving ? 'wait' : 'pointer',
+                              fontWeight: 600,
+                              minWidth: 120,
+                            }}
+                          >
+                            {isEditingThis ? 'Редактируем' : 'Настроить'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteCamera(camera.id, camera.name)}
+                            disabled={isRemoving}
+                            style={{
+                              padding: '6px 12px',
+                              borderRadius: 6,
+                              border: '1px solid #fca5a5',
+                              background: isRemoving ? '#fecaca' : '#fee2e2',
+                              color: '#b91c1c',
+                              cursor: isRemoving ? 'wait' : 'pointer',
+                              fontWeight: 600,
+                              minWidth: 110,
+                            }}
+                          >
+                            {isRemoving ? 'Удаляем…' : 'Удалить'}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
