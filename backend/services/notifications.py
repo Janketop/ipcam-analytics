@@ -1,7 +1,8 @@
 """Управление WebSocket-клиентами и рассылкой уведомлений."""
 from __future__ import annotations
 
-from typing import List
+import asyncio
+from typing import Dict, List, Tuple
 
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -64,3 +65,50 @@ class StatusBroadcaster(_BaseBroadcaster):
 
     def __init__(self) -> None:
         super().__init__("statuses")
+        self._last_payloads: Dict[Tuple[str, int | str], dict] = {}
+        self._lock = asyncio.Lock()
+
+    async def connect(self, websocket: WebSocket) -> None:
+        await super().connect(websocket)
+
+        async with self._lock:
+            snapshots = list(self._last_payloads.values())
+
+        if not snapshots:
+            return
+
+        def _sort_key(item: dict) -> Tuple[int, int | str]:
+            camera_id = item.get("cameraId")
+            if isinstance(camera_id, int):
+                return (0, camera_id)
+            camera_name = item.get("camera")
+            if isinstance(camera_name, str):
+                return (1, camera_name)
+            return (2, "")
+
+        for payload in sorted(snapshots, key=_sort_key):
+            try:
+                await websocket.send_json(payload)
+            except Exception:
+                logger.exception(
+                    "[%s] Ошибка при отправке накопленных статусов WebSocket %s",
+                    self._channel_name,
+                    websocket.client,
+                )
+                self.disconnect(websocket)
+                break
+
+    async def broadcast(self, payload: dict) -> None:
+        key: Tuple[str, int | str] | None = None
+        camera_id = payload.get("cameraId")
+        camera_name = payload.get("camera")
+        if isinstance(camera_id, int):
+            key = ("id", camera_id)
+        elif isinstance(camera_name, str) and camera_name:
+            key = ("name", camera_name)
+
+        if key is not None:
+            async with self._lock:
+                self._last_payloads[key] = dict(payload)
+
+        await super().broadcast(payload)
