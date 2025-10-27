@@ -11,6 +11,7 @@ from backend.core.logger import LOGGING_CONFIG, logger
 from backend.core.app import create_app
 from backend.core.config import settings
 from backend.core.database import SessionFactory
+from backend.core.migrations import run_startup_migrations
 from backend.models import Camera
 from backend.services.cleanup import cleanup_loop, perform_cleanup
 
@@ -55,6 +56,7 @@ async def lifespan(app: FastAPI):
     session_factory = app.state.session_factory
     ingest = app.state.ingest_manager
 
+    run_startup_migrations(session_factory)
     await _init_default_cameras(session_factory)
 
     main_loop = asyncio.get_running_loop()
