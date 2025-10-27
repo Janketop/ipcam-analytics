@@ -1,6 +1,10 @@
 export type EventMeta = {
   plate?: string | null;
   entry_ts?: string | null;
+  pose_confidence?: number | null;
+  head_angle?: number | null;
+  hands_motion?: number | null;
+  duration_idle_sec?: number | null;
 };
 
 export type EventItem = {

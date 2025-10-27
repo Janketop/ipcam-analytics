@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,23 @@ from backend.models import Event
 from backend.services.activity_detector import ActivityDetector
 from backend.services.ai_detector import AIDetector
 from backend.services.snapshots import save_snapshot
+
+
+def _normalize_meta_number(value: object) -> float | None:
+    """Преобразует числовое значение к float и отбрасывает бесконечности/NaN."""
+
+    if value is None:
+        return None
+
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    if math.isnan(number) or math.isinf(number):
+        return None
+
+    return number
 
 
 class IngestWorker(Thread):
@@ -392,22 +410,27 @@ class IngestWorker(Thread):
                 for activity in activity_updates:
                     if not activity.get("changed"):
                         continue
+
+                    activity_id = activity.get("id")
+                    meta = {
+                        "person_id": str(activity_id) if activity_id is not None else None,
+                        "pose_confidence": _normalize_meta_number(activity.get("confidence")),
+                        "head_angle": _normalize_meta_number(activity.get("head_angle")),
+                        "head_motion": _normalize_meta_number(activity.get("head_movement")),
+                        "hands_motion": _normalize_meta_number(activity.get("hand_movement")),
+                        "movement_score": _normalize_meta_number(activity.get("movement_score")),
+                        "duration_idle_sec": _normalize_meta_number(activity.get("idle_seconds")),
+                        "duration_away_sec": _normalize_meta_number(activity.get("away_seconds")),
+                    }
+                    meta = {key: value for key, value in meta.items() if value is not None}
+
                     events_to_store.append(
                         {
                             "ts": now,
                             "type": activity["state"],
                             "confidence": float(activity.get("confidence", 0.0)),
                             "snapshot": snapshot_img,
-                            "meta": {
-                                "personId": activity.get("id"),
-                                "poseConfidence": activity.get("confidence"),
-                                "headAngle": activity.get("head_angle"),
-                                "headMovement": activity.get("head_movement"),
-                                "handMovement": activity.get("hand_movement"),
-                                "movementScore": activity.get("movement_score"),
-                                "idleSeconds": activity.get("idle_seconds"),
-                                "awaySeconds": activity.get("away_seconds"),
-                            },
+                            "meta": meta,
                             "kind": "activity",
                         }
                     )

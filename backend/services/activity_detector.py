@@ -87,16 +87,16 @@ class ActivityDetector:
         updates: List[Dict[str, object]] = []
 
         for person in people:
+            keypoints = self._coerce_keypoints(person.get("keypoints"))
+
             person_id_raw = person.get("id")
             if person_id_raw is None:
-                keypoints = np.asarray(person.get("keypoints") or np.zeros((0, 2)))
                 digest = hashlib.sha1(keypoints.tobytes()).hexdigest()[:16]
                 person_id = digest
             else:
                 person_id = str(person_id_raw)
             seen_ids.add(person_id)
 
-            keypoints = np.asarray(person.get("keypoints") or np.zeros((0, 2)), dtype=np.float32)
             confidence = float(person.get("confidence") or 0.0)
 
             prev = self.prev_keypoints.get(person_id)
@@ -170,3 +170,27 @@ class ActivityDetector:
             )
 
         return updates
+
+    @staticmethod
+    def _coerce_keypoints(raw_keypoints: object) -> np.ndarray:
+        """Преобразует входные ключевые точки в матрицу Nx2 float32."""
+
+        if raw_keypoints is None:
+            return np.zeros((0, 2), dtype=np.float32)
+
+        keypoints = np.asarray(raw_keypoints, dtype=np.float32)
+        if keypoints.size == 0:
+            return np.zeros((0, 2), dtype=np.float32)
+
+        if keypoints.ndim == 1:
+            if keypoints.size < 2:
+                return np.zeros((0, 2), dtype=np.float32)
+            keypoints = keypoints.reshape(-1, 2)
+        else:
+            # Схлопываем лишние измерения и оставляем только координаты X/Y.
+            keypoints = keypoints.reshape(-1, keypoints.shape[-1])
+            if keypoints.shape[1] < 2:
+                return np.zeros((0, 2), dtype=np.float32)
+            keypoints = keypoints[:, :2]
+
+        return keypoints
