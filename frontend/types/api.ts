@@ -18,9 +18,15 @@ export type Stat = {
   cnt: number;
 };
 
+export type CameraStatus = 'online' | 'offline' | 'starting' | 'stopping' | 'no_signal' | 'unknown';
+
 export type Camera = {
   id: number;
   name: string;
+  status?: CameraStatus;
+  fps?: number | null;
+  lastFrameTs?: string | null;
+  uptimeSec?: number | null;
 };
 
 export type RuntimeWorker = {
