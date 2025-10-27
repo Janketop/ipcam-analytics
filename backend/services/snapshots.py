@@ -5,7 +5,6 @@ from datetime import datetime
 from typing import Optional
 from uuid import uuid4
 import os
-import shutil
 
 import cv2
 
