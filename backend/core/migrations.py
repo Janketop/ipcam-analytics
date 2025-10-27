@@ -31,6 +31,17 @@ def _add_missing_camera_flags(columns: set[str]) -> Iterable[str]:
         )
 
 
+def _add_missing_face_sample_embeddings(columns: set[str]) -> Iterable[tuple[str, str]]:
+    """Добавляет недостающие колонки для хранения эмбеддингов лиц."""
+
+    if "embedding" not in columns:
+        yield "embedding", "ALTER TABLE face_samples ADD COLUMN embedding BYTEA"
+    if "embedding_dim" not in columns:
+        yield "embedding_dim", "ALTER TABLE face_samples ADD COLUMN embedding_dim INTEGER"
+    if "embedding_model" not in columns:
+        yield "embedding_model", "ALTER TABLE face_samples ADD COLUMN embedding_model TEXT"
+
+
 def run_startup_migrations(session_factory: SessionFactory) -> None:
     """Запускает простые миграции БД, безопасные при повторном выполнении."""
 
@@ -94,6 +105,29 @@ def run_startup_migrations(session_factory: SessionFactory) -> None:
         logger.info(
             "Убедились в наличии таблиц employees/face_samples и индексов.",
         )
+
+        try:
+            face_sample_columns = {
+                col["name"] for col in inspector.get_columns("face_samples")
+            }
+        except NoSuchTableError:
+            face_sample_columns = set()
+
+        embedding_statements = list(
+            _add_missing_face_sample_embeddings(face_sample_columns)
+        )
+        if embedding_statements:
+            for _, statement in embedding_statements:
+                session.execute(text(statement))
+            session.commit()
+            logger.info(
+                "Добавлены недостающие поля для эмбеддингов лиц: %s",
+                ", ".join(column for column, _ in embedding_statements),
+            )
+        else:
+            logger.info(
+                "Колонки для эмбеддингов лиц уже присутствуют в таблице face_samples."
+            )
 
 
 __all__ = ["run_startup_migrations"]

@@ -9,6 +9,8 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from backend.core.config import settings
 from backend.core.logger import logger
+from backend.core.database import get_session_factory
+from backend.utils.rebuild_face_embeddings import rebuild_missing_face_embeddings
 from backend.core.paths import BACKEND_DIR, DATASET_PHONE_USAGE_DIR
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
@@ -222,6 +224,18 @@ def main() -> Optional[Path]:
     """Точка входа сценария самообучения."""
 
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
+    try:
+        rebuilt = rebuild_missing_face_embeddings(get_session_factory())
+    except Exception:
+        logger.exception("Не удалось пересчитать эмбеддинги лиц перед самообучением")
+    else:
+        if rebuilt:
+            logger.info(
+                "Перед самообучением обновлено %d эмбеддингов сотрудников",
+                rebuilt,
+            )
+
     samples = collect_samples()
     if not samples:
         logger.info("Новых размеченных снимков не найдено — обучение пропущено")
