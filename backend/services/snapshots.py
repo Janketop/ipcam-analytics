@@ -6,6 +6,8 @@ from typing import Optional
 from uuid import uuid4
 import os
 
+from shutil import copy2
+
 import cv2
 
 from backend.core.logger import logger
@@ -53,7 +55,7 @@ def save_snapshot(img_bgr, ts: datetime, camera_name: str, event_type: str = "ev
         logger.info("Снимок сохранён: %s", path)
         dataset_path = DATASET_PHONE_USAGE_DIR / filename
         try:
-            shutil.copy2(path, dataset_path)
+            copy2(path, dataset_path)
         except Exception as exc:
             logger.warning(
                 "Не удалось скопировать снимок %s в датасет по пути %s: %s",
