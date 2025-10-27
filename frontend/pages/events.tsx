@@ -3,6 +3,33 @@ import Layout from '../components/Layout';
 import { useApiBase } from '../hooks/useApiBase';
 import { EventItem, EventMeta } from '../types/api';
 
+type WsEventPayload = {
+  id?: number;
+  type?: string;
+  start_ts?: string;
+  ts?: string;
+  confidence?: number;
+  snapshot_url?: string;
+  camera?: string;
+  meta?: EventMeta;
+};
+
+const mapWsEventPayload = (payload: WsEventPayload | null): EventItem | null => {
+  if (!payload) return null;
+  const startTs = payload.start_ts || payload.ts;
+  if (!startTs) return null;
+
+  return {
+    id: typeof payload.id === 'number' ? payload.id : undefined,
+    type: payload.type || 'UNKNOWN_EVENT',
+    start_ts: startTs,
+    confidence: typeof payload.confidence === 'number' ? payload.confidence : undefined,
+    snapshot_url: payload.snapshot_url,
+    camera: payload.camera,
+    meta: payload.meta,
+  };
+};
+
 const formatPlate = (meta?: EventMeta) => {
   const plate = meta?.plate;
   if (!plate) return '—';
@@ -42,18 +69,23 @@ const EventsPage = () => {
 
     const ws = new WebSocket(wsUrl.toString());
     ws.onmessage = message => {
-      const data = JSON.parse(message.data);
-      setEvents(prev => [
-        {
-          type: data.type,
-          start_ts: data.ts,
-          confidence: data.confidence,
-          snapshot_url: data.snapshot_url,
-          camera: data.camera,
-          meta: data.meta,
-        },
-        ...prev,
-      ].slice(0, 200));
+      try {
+        const parsed = JSON.parse(message.data) as WsEventPayload;
+        const nextEvent = mapWsEventPayload(parsed);
+        if (!nextEvent) {
+          return;
+        }
+
+        setEvents(prev => {
+          const deduped = nextEvent.id != null
+            ? prev.filter(event => event.id !== nextEvent.id)
+            : prev.filter(event => event.start_ts !== nextEvent.start_ts);
+
+          return [nextEvent, ...deduped].slice(0, 200);
+        });
+      } catch (err) {
+        console.error('Не удалось обработать событие по WebSocket:', err);
+      }
     };
 
     return () => {

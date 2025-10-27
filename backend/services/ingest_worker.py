@@ -224,11 +224,13 @@ class IngestWorker(Thread):
                                 meta=meta,
                             )
                             session.add(event)
+                            session.flush()
                             persisted_events.append(
                                 {
+                                    "id": event.id,
                                     "camera": self.name,
                                     "type": payload["type"],
-                                    "ts": ts,
+                                    "start_ts": event.start_ts,
                                     "confidence": payload["confidence"],
                                     "snapshot_url": snap_url,
                                     "meta": meta,
@@ -250,9 +252,10 @@ class IngestWorker(Thread):
                             future = asyncio.run_coroutine_threadsafe(
                                 self.broadcaster(
                                     {
+                                        "id": stored["id"],
                                         "camera": stored["camera"],
                                         "type": stored["type"],
-                                        "ts": stored["ts"].isoformat(),
+                                        "start_ts": stored["start_ts"].isoformat(),
                                         "confidence": stored["confidence"],
                                         "snapshot_url": stored["snapshot_url"],
                                         "meta": stored["meta"],
