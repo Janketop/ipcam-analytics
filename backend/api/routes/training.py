@@ -12,7 +12,18 @@ router = APIRouter(prefix="/train", tags=["training"])
 async def schedule_self_training(request: Request) -> dict:
     """Запускает дообучение модели в фоне."""
 
-    service: SelfTrainingService = request.app.state.self_training_service
+    service = getattr(request.app.state, "self_training_service", None)
+    if service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Сервис самообучения временно недоступен.",
+        )
+
+    if not isinstance(service, SelfTrainingService):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Неверная конфигурация сервиса самообучения.",
+        )
     started = await service.start_training(request.app)
     if not started:
         raise HTTPException(
