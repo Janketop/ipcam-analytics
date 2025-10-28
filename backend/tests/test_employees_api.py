@@ -2,14 +2,14 @@ from datetime import datetime, timezone
 
 import numpy as np
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.api.routes.employees import FaceSampleAssignRequest, assign_face_sample
 from backend.models import Camera, Employee, FaceSample
 from backend.models.base import Base
-from backend.services.face_embeddings import FaceEmbeddingResult
+from backend.services.face_embeddings import FaceEmbeddingResult, get_embedding_metadata
 
 
 @pytest.fixture()
@@ -19,7 +19,11 @@ def session_factory():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    Base.metadata.create_all(engine, tables=[Employee.__table__, FaceSample.__table__, Camera.__table__])
+    Base.metadata.create_all(engine, tables=[Employee.__table__, FaceSample.__table__])
+    with engine.begin() as conn:
+        conn.execute(
+            text("CREATE TABLE IF NOT EXISTS cameras (id INTEGER PRIMARY KEY, name TEXT)")
+        )
     factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
     def _factory():
@@ -46,7 +50,11 @@ def test_assign_face_sample_stores_embedding(monkeypatch, session_factory):
         sample_id = sample.id
         employee_id = employee.id
 
-    fake_embedding = FaceEmbeddingResult(vector=np.ones(128, dtype=np.float32), model="small")
+    metadata = get_embedding_metadata()
+    fake_embedding = FaceEmbeddingResult(
+        vector=np.ones(metadata["embedding_dim"], dtype=np.float32),
+        model=metadata["model"],
+    )
     monkeypatch.setattr(
         "backend.api.routes.employees.compute_face_embedding_from_snapshot",
         lambda *args, **kwargs: fake_embedding,
@@ -71,7 +79,7 @@ def test_assign_face_sample_stores_embedding(monkeypatch, session_factory):
         assert updated is not None
         assert updated.employee_id == employee_id
         assert updated.embedding is not None
-        assert updated.embedding_dim == 128
-        assert updated.embedding_model == "small"
+        assert updated.embedding_dim == metadata["embedding_dim"]
+        assert updated.embedding_model == metadata["model"]
 
     assert notified
