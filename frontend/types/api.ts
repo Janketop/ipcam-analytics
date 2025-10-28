@@ -115,3 +115,36 @@ export type RuntimeInfo = {
   workers: RuntimeWorker[];
   summary?: RuntimeSummary;
 };
+
+export type CleanupState = {
+  last_run: string | null;
+  cutoff: string | null;
+  deleted_events: number;
+  deleted_snapshots: number;
+  deleted_dataset_copies: number;
+  deleted_face_samples: number;
+  face_sample_cutoff: string | null;
+  error?: string | null;
+  in_progress: boolean;
+};
+
+export type HealthResponse = {
+  ok: boolean;
+  face_blur: boolean;
+  retention_days: number;
+  face_sample_unverified_retention_days: number;
+  cleanup_interval_hours: number;
+  cleanup: CleanupState;
+};
+
+export type CleanupSettings = {
+  retentionDays: number;
+  faceSampleRetentionDays: number;
+  cleanupIntervalHours: number;
+  faceBlurEnabled: boolean;
+};
+
+export type CleanupRunResponse = {
+  ok: boolean;
+  cleanup: CleanupState;
+};
