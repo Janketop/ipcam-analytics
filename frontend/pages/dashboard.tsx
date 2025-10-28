@@ -49,6 +49,9 @@ const DashboardPage = () => {
   const [isTraining, setIsTraining] = useState(false);
   const [trainError, setTrainError] = useState<string | null>(null);
   const [trainSuccess, setTrainSuccess] = useState<string | null>(null);
+  const [isFaceTraining, setIsFaceTraining] = useState(false);
+  const [faceTrainError, setFaceTrainError] = useState<string | null>(null);
+  const [faceTrainSuccess, setFaceTrainSuccess] = useState<string | null>(null);
 
   useEffect(() => {
     const loadStats = async () => {
@@ -92,6 +95,39 @@ const DashboardPage = () => {
       setTrainError(err instanceof Error ? err.message : 'Не удалось запустить самообучение');
     } finally {
       setIsTraining(false);
+    }
+  }, [normalizedApiBase]);
+
+  const handleFaceDetectorTraining = useCallback(async () => {
+    setFaceTrainError(null);
+    setFaceTrainSuccess(null);
+    setIsFaceTraining(true);
+    try {
+      const response = await fetch(`${normalizedApiBase}/train/face-detector`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (!response.ok) {
+        let detail = response.statusText;
+        try {
+          const data = await response.json();
+          if (data?.detail) {
+            detail = data.detail;
+          }
+        } catch (err) {
+          console.warn('Не удалось разобрать ответ API при запуске обучения детектора лиц', err);
+        }
+        throw new Error(detail || 'Не удалось запустить обучение детектора лиц');
+      }
+      setFaceTrainSuccess('Обучение детектора лиц запущено. Итоговые веса появятся в разделе weights после завершения.');
+    } catch (err) {
+      console.error('Ошибка запуска обучения детектора лиц', err);
+      setFaceTrainError(
+        err instanceof Error ? err.message : 'Не удалось запустить обучение детектора лиц'
+      );
+    } finally {
+      setIsFaceTraining(false);
     }
   }, [normalizedApiBase]);
 
@@ -197,38 +233,74 @@ const DashboardPage = () => {
               clearEventsError={clearEventsError}
               clearEventsSuccess={clearEventsSuccess}
             />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <button
-                onClick={handleSelfTraining}
-                disabled={isTraining}
-                style={{
-                  padding: '8px 12px',
-                  borderRadius: 6,
-                  border: 'none',
-                  backgroundColor: isTraining ? '#94a3b8' : '#2563eb',
-                  color: '#fff',
-                  cursor: isTraining ? 'not-allowed' : 'pointer',
-                  fontWeight: 600,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  minHeight: 40,
-                }}
-              >
-                {isTraining && <span style={spinnerStyle} role="status" aria-label="Запуск обучения" />}
-                {isTraining ? 'Обновляем модель...' : 'Обновить модель'}
-              </button>
-              {isTraining && (
-                <span style={{ fontSize: 12, color: '#475569' }}>
-                  Обучение запущено, дождитесь завершения процесса.
-                </span>
-              )}
-              {trainSuccess && !isTraining && (
-                <span style={{ fontSize: 12, color: '#16a34a' }}>{trainSuccess}</span>
-              )}
-              {trainError && !isTraining && (
-                <span style={{ fontSize: 12, color: '#dc2626' }}>{trainError}</span>
-              )}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <button
+                  onClick={handleSelfTraining}
+                  disabled={isTraining}
+                  style={{
+                    padding: '8px 12px',
+                    borderRadius: 6,
+                    border: 'none',
+                    backgroundColor: isTraining ? '#94a3b8' : '#2563eb',
+                    color: '#fff',
+                    cursor: isTraining ? 'not-allowed' : 'pointer',
+                    fontWeight: 600,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    minHeight: 40,
+                  }}
+                >
+                  {isTraining && <span style={spinnerStyle} role="status" aria-label="Запуск обучения" />}
+                  {isTraining ? 'Обновляем модель...' : 'Обновить модель'}
+                </button>
+                {isTraining && (
+                  <span style={{ fontSize: 12, color: '#475569' }}>
+                    Обучение запущено, дождитесь завершения процесса.
+                  </span>
+                )}
+                {trainSuccess && !isTraining && (
+                  <span style={{ fontSize: 12, color: '#16a34a' }}>{trainSuccess}</span>
+                )}
+                {trainError && !isTraining && (
+                  <span style={{ fontSize: 12, color: '#dc2626' }}>{trainError}</span>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <button
+                  onClick={handleFaceDetectorTraining}
+                  disabled={isFaceTraining}
+                  style={{
+                    padding: '8px 12px',
+                    borderRadius: 6,
+                    border: 'none',
+                    backgroundColor: isFaceTraining ? '#94a3b8' : '#0f766e',
+                    color: '#fff',
+                    cursor: isFaceTraining ? 'not-allowed' : 'pointer',
+                    fontWeight: 600,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    minHeight: 40,
+                  }}
+                >
+                  {isFaceTraining && <span style={spinnerStyle} role="status" aria-label="Запуск обучения детектора лиц" />}
+                  {isFaceTraining ? 'Готовим детектор лиц...' : 'Обучить детектор лиц'}
+                </button>
+                {isFaceTraining && (
+                  <span style={{ fontSize: 12, color: '#475569' }}>
+                    Обучение стартовало. Скачивание датасета и обучение займут продолжительное время.
+                  </span>
+                )}
+                {faceTrainSuccess && !isFaceTraining && (
+                  <span style={{ fontSize: 12, color: '#16a34a' }}>{faceTrainSuccess}</span>
+                )}
+                {faceTrainError && !isFaceTraining && (
+                  <span style={{ fontSize: 12, color: '#dc2626' }}>{faceTrainError}</span>
+                )}
+              </div>
             </div>
           </div>
 

@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 import time
 from contextlib import closing
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -29,22 +30,83 @@ if TYPE_CHECKING:
 
 PHONE_CLASS = "cell phone"
 
-# Поддерживаем несколько релизов Ultralytics assets, чтобы не зависеть от конкретного тега.
-# См. https://github.com/ultralytics/assets/releases
-_FACE_RELEASE_TAGS: tuple[str, ...] = (
-    "v8.1.0",
-    "v8.0.0",
-    "v8.2.0",
-    "v8.3.0",
-    "v0.0.0",
+# Динамически ищем веса на GitHub releases, но также оставляем резервные ссылки.
+_GITHUB_RELEASES_API = "https://api.github.com/repos/ultralytics/assets/releases"
+
+_DEFAULT_FACE_WEIGHT_URLS: tuple[str, ...] = (
+    "https://github.com/ultralytics/assets/releases/latest/download/yolo11n.pt",
+    "https://huggingface.co/ultralytics/yolo11/resolve/main/yolo11n.pt?download=1",
+    "https://huggingface.co/ultralytics/yolov8/resolve/main/yolov8n.pt?download=1",
 )
 
-_DEFAULT_FACE_WEIGHT_URLS: tuple[str, ...] = tuple(
-    f"https://github.com/ultralytics/assets/releases/download/{tag}/yolov8n-face.pt"
-    for tag in _FACE_RELEASE_TAGS
-) + (
-    "https://huggingface.co/ultralytics/yolov8/resolve/main/yolov8n-face.pt?download=1",
-)
+
+def _deduplicate_preserve_order(urls: Iterable[str]) -> List[str]:
+    """Удаляет дубликаты URL, сохраняя порядок."""
+
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for url in urls:
+        if not url:
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        ordered.append(url)
+    return ordered
+
+
+def _fetch_github_face_weight_urls() -> List[str]:
+    """Получает список доступных весов face-моделей из GitHub releases Ultralytics."""
+
+    request = Request(
+        _GITHUB_RELEASES_API,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/vnd.github+json",
+        },
+    )
+    try:  # pragma: no cover - зависит от сети
+        with closing(urlopen(request, timeout=20)) as response:
+            payload = response.read().decode("utf-8")
+        data = json.loads(payload)
+    except Exception as exc:  # pragma: no cover - зависит от сети
+        logger.warning("Не удалось запросить список релизов Ultralytics: %s", exc)
+        return []
+
+    if not isinstance(data, list):
+        return []
+
+    urls: List[str] = []
+    for release in data:
+        assets = release.get("assets") if isinstance(release, dict) else None
+        if not assets:
+            continue
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            name = str(asset.get("name") or "").lower()
+            if not name.endswith(".pt"):
+                continue
+            if "yolo11n" not in name:
+                continue
+            if any(suffix in name for suffix in ("pose", "seg", "cls", "face")):
+                continue
+            download = asset.get("browser_download_url")
+            if download:
+                urls.append(str(download))
+
+    return _deduplicate_preserve_order(urls)
+
+
+def _candidate_face_weight_urls(manual_url: Optional[str]) -> List[str]:
+    """Формирует итоговый список URL для скачивания весов детектора лиц."""
+
+    combined: List[str] = []
+    if manual_url:
+        combined.append(manual_url)
+    combined.extend(_fetch_github_face_weight_urls())
+    combined.extend(_DEFAULT_FACE_WEIGHT_URLS)
+    return _deduplicate_preserve_order(combined)
 
 
 def _download_file(url: str, destination: Path) -> None:
@@ -73,26 +135,38 @@ def _ensure_face_weights() -> str:
         raise ValueError("Не задано имя весов для детектора лиц")
 
     preferred_path = settings.yolo_face_model_path
-    candidates = [Path(configured)]
-    if preferred_path not in candidates:
-        candidates.append(preferred_path)
+    candidates = [preferred_path]
+    raw_candidate = Path(configured)
+    if raw_candidate != preferred_path:
+        candidates.append(raw_candidate)
 
     for candidate in candidates:
-        if candidate.is_file():
-            return str(candidate)
+        try:
+            if candidate.is_file() and candidate.stat().st_size > 0:
+                return str(candidate)
+        except OSError:
+            continue
 
-    tried_urls: list[str] = []
     manual_url = (settings.yolo_face_model_url or "").strip()
-    if manual_url:
-        tried_urls.append(manual_url)
-    for fallback in _DEFAULT_FACE_WEIGHT_URLS:
-        if fallback not in tried_urls:
-            tried_urls.append(fallback)
+    tried_urls = _candidate_face_weight_urls(manual_url)
 
     for url in tried_urls:
         try:
             logger.info("Скачиваю веса детектора лиц из %s", url)
             _download_file(url, preferred_path)
+            try:
+                if preferred_path.stat().st_size <= 0:
+                    logger.error(
+                        "Скачанный файл весов из %s пустой. Пробую следующий источник.",
+                        url,
+                    )
+                    continue
+            except OSError:
+                logger.error(
+                    "Не удалось проверить размер скачанных весов из %s. Пробую следующий источник.",
+                    url,
+                )
+                continue
             return str(preferred_path)
         except URLError as error:
             logger.error("Не удалось скачать веса детектора лиц (%s): %s", url, error)
