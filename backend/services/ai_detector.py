@@ -94,6 +94,58 @@ def _ensure_face_weights() -> str:
     )
 
 
+def _download_file(url: str, destination: Path) -> None:
+    """Скачивает файл по прямой ссылке с защитой от частичных загрузок."""
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = destination.with_suffix(destination.suffix + ".download")
+    try:
+        with closing(urlopen(url, timeout=30)) as response, open(tmp_path, "wb") as tmp_file:
+            shutil.copyfileobj(response, tmp_file)
+        tmp_path.replace(destination)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def _ensure_face_weights() -> str:
+    """Возвращает путь до весов face-модели, скачивая их при необходимости."""
+
+    configured = settings.yolo_face_model.strip()
+    if not configured:
+        raise ValueError("Не задано имя весов для детектора лиц")
+
+    preferred_path = settings.yolo_face_model_path
+    candidates = [Path(configured)]
+    if preferred_path not in candidates:
+        candidates.append(preferred_path)
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+
+    url = (settings.yolo_face_model_url or "").strip()
+    if url:
+        try:
+            logger.info("Скачиваю веса детектора лиц из %s", url)
+            _download_file(url, preferred_path)
+            return str(preferred_path)
+        except URLError as error:
+            logger.error("Не удалось скачать веса детектора лиц: %s", error)
+        except Exception:
+            logger.exception("Непредвиденная ошибка при скачивании весов детектора лиц")
+
+    logger.warning(
+        "Файл весов детектора лиц '%s' не найден. Проверьте путь или задайте URL для скачивания.",
+        configured,
+    )
+
+    return configured
+
+
 def resolve_device(preferred: Optional[str] = None, cuda_env: Optional[str] = None) -> str:
     """Выбирает устройство для инференса: GPU, если доступно, иначе CPU."""
     if preferred and preferred.strip().lower() not in {"auto", ""}:
