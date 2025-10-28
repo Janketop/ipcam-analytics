@@ -17,7 +17,7 @@ from backend.core.logger import logger
 from backend.core.paths import STATIC_DIR
 from backend.services.ingest_manager import IngestManager
 from backend.services.notifications import EventBroadcaster, StatusBroadcaster
-from backend.services.training import SelfTrainingService
+from backend.services.training import FaceDetectorTrainingService, SelfTrainingService
 
 
 def _setup_cors(app: FastAPI) -> None:
@@ -83,6 +83,7 @@ def create_app() -> FastAPI:
     )
     app.state.cleanup_interval_hours = settings.retention_cleanup_interval_hours
     app.state.self_training_service = SelfTrainingService()
+    app.state.face_training_service = FaceDetectorTrainingService()
 
     _log_gpu_status()
     logger.info(

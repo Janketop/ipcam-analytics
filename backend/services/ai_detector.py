@@ -2,8 +2,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import shutil
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
+from contextlib import closing
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 import cv2
 import numpy as np
@@ -23,6 +29,165 @@ if TYPE_CHECKING:
     from backend.services.employee_recognizer import EmployeeRecognizer, RecognizedEmployee
 
 PHONE_CLASS = "cell phone"
+
+# Динамически ищем веса на GitHub releases, но также оставляем резервные ссылки.
+_GITHUB_RELEASES_API = "https://api.github.com/repos/ultralytics/assets/releases"
+
+_DEFAULT_FACE_WEIGHT_URLS: tuple[str, ...] = (
+    "https://github.com/ultralytics/assets/releases/latest/download/yolo11n.pt",
+    "https://huggingface.co/ultralytics/yolo11/resolve/main/yolo11n.pt?download=1",
+    "https://huggingface.co/ultralytics/yolov8/resolve/main/yolov8n.pt?download=1",
+)
+
+
+def _deduplicate_preserve_order(urls: Iterable[str]) -> List[str]:
+    """Удаляет дубликаты URL, сохраняя порядок."""
+
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for url in urls:
+        if not url:
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        ordered.append(url)
+    return ordered
+
+
+def _fetch_github_face_weight_urls() -> List[str]:
+    """Получает список доступных весов face-моделей из GitHub releases Ultralytics."""
+
+    request = Request(
+        _GITHUB_RELEASES_API,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/vnd.github+json",
+        },
+    )
+    try:  # pragma: no cover - зависит от сети
+        with closing(urlopen(request, timeout=20)) as response:
+            payload = response.read().decode("utf-8")
+        data = json.loads(payload)
+    except Exception as exc:  # pragma: no cover - зависит от сети
+        logger.warning("Не удалось запросить список релизов Ultralytics: %s", exc)
+        return []
+
+    if not isinstance(data, list):
+        return []
+
+    urls: List[str] = []
+    for release in data:
+        assets = release.get("assets") if isinstance(release, dict) else None
+        if not assets:
+            continue
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            name = str(asset.get("name") or "").lower()
+            if not name.endswith(".pt"):
+                continue
+            if "yolo11n" not in name:
+                continue
+            if any(suffix in name for suffix in ("pose", "seg", "cls", "face")):
+                continue
+            download = asset.get("browser_download_url")
+            if download:
+                urls.append(str(download))
+
+    return _deduplicate_preserve_order(urls)
+
+
+def _candidate_face_weight_urls(manual_url: Optional[str]) -> List[str]:
+    """Формирует итоговый список URL для скачивания весов детектора лиц."""
+
+    combined: List[str] = []
+    if manual_url:
+        combined.append(manual_url)
+    combined.extend(_fetch_github_face_weight_urls())
+    combined.extend(_DEFAULT_FACE_WEIGHT_URLS)
+    return _deduplicate_preserve_order(combined)
+
+
+def _download_file(url: str, destination: Path) -> None:
+    """Скачивает файл по прямой ссылке с защитой от частичных загрузок."""
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = destination.with_suffix(destination.suffix + ".download")
+    try:
+        request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with closing(urlopen(request, timeout=30)) as response, open(tmp_path, "wb") as tmp_file:
+            shutil.copyfileobj(response, tmp_file)
+        tmp_path.replace(destination)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def _ensure_face_weights(*, allow_missing: bool = False) -> Optional[str]:
+    """Возвращает путь до весов face-модели, скачивая их при необходимости.
+
+    Если веса не удалось найти и ``allow_missing`` равно ``True``, функция
+    возвращает ``None`` вместо выброса исключения. Это позволяет сервису
+    деградировать без полного отказа потоковой обработки.
+    """
+
+    configured = settings.yolo_face_model.strip()
+    if not configured:
+        raise ValueError("Не задано имя весов для детектора лиц")
+
+    preferred_path = settings.yolo_face_model_path
+    candidates = [preferred_path]
+    raw_candidate = Path(configured)
+    if raw_candidate != preferred_path:
+        candidates.append(raw_candidate)
+
+    for candidate in candidates:
+        try:
+            if candidate.is_file() and candidate.stat().st_size > 0:
+                return str(candidate)
+        except OSError:
+            continue
+
+    manual_url = (settings.yolo_face_model_url or "").strip()
+    tried_urls = _candidate_face_weight_urls(manual_url)
+
+    for url in tried_urls:
+        try:
+            logger.info("Скачиваю веса детектора лиц из %s", url)
+            _download_file(url, preferred_path)
+            try:
+                if preferred_path.stat().st_size <= 0:
+                    logger.error(
+                        "Скачанный файл весов из %s пустой. Пробую следующий источник.",
+                        url,
+                    )
+                    continue
+            except OSError:
+                logger.error(
+                    "Не удалось проверить размер скачанных весов из %s. Пробую следующий источник.",
+                    url,
+                )
+                continue
+            return str(preferred_path)
+        except URLError as error:
+            logger.error("Не удалось скачать веса детектора лиц (%s): %s", url, error)
+        except Exception:
+            logger.exception(
+                "Непредвиденная ошибка при скачивании весов детектора лиц из %s",
+                url,
+            )
+
+    message = (
+        "Не удалось получить веса детектора лиц. Задайте корректный путь или URL в настройках"
+    )
+    if allow_missing:
+        logger.warning(message)
+        return None
+    raise FileNotFoundError(message)
 
 
 def resolve_device(preferred: Optional[str] = None, cuda_env: Optional[str] = None) -> str:
@@ -65,19 +230,29 @@ class AIDetector:
 
         det_weights = settings.yolo_det_model
         pose_weights = settings.yolo_pose_model
-        face_weights = settings.yolo_face_model
+        face_weights = _ensure_face_weights(allow_missing=True)
         self.device_preference = settings.yolo_device
         self.device = resolve_device(self.device_preference, settings.cuda_visible_devices)
 
         self.det = YOLO(det_weights)
         self.pose = YOLO(pose_weights)
-        self.face_det = YOLO(face_weights)
+        self.face_det: Optional[YOLO] = None
+        if face_weights:
+            try:
+                self.face_det = YOLO(face_weights)
+            except Exception:
+                logger.exception(
+                    "Не удалось инициализировать детектор лиц YOLO по весам %s",
+                    face_weights,
+                )
+        self._face_warning_shown = False
         self.device_error: Optional[str] = None
         self.actual_device: Optional[str] = None
         try:
             self.det.to(self.device)
             self.pose.to(self.device)
-            self.face_det.to(self.device)
+            if self.face_det is not None:
+                self.face_det.to(self.device)
         except Exception as exc:
             self.device_error = str(exc).strip() or None
         finally:
@@ -383,7 +558,7 @@ class AIDetector:
             det_res = self.det(frame, **det_kwargs)[0]
 
         face_detections: List[Dict[str, Any]] = []
-        if detect_person:
+        if detect_person and self.face_det is not None:
             face_kwargs = {"imgsz": self.det_imgsz, "conf": self.face_conf}
             if self.predict_device:
                 face_kwargs["device"] = self.predict_device
@@ -401,6 +576,12 @@ class AIDetector:
                         xyxy = np.asarray(b.xyxy[0])
                     conf = float(b.conf[0]) if getattr(b, "conf", None) is not None else 0.0
                     face_detections.append({"bbox": xyxy, "conf": conf, "used": False})
+        elif detect_person and self.face_det is None:
+            if not getattr(self, "_face_warning_shown", False):
+                logger.warning(
+                    "Детектор лиц не активирован: веса не найдены. Поток продолжает работу без поиска лиц."
+                )
+                self._face_warning_shown = True
 
         if self.phone_idx is None and det_res is not None and detect_person:
             names = getattr(self.det.model, "names", None) or getattr(self.det, "names", {})

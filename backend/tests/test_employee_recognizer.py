@@ -9,6 +9,10 @@ from sqlalchemy.pool import StaticPool
 from backend.models import Employee, FaceSample
 from backend.models.base import Base
 from backend.services.employee_recognizer import EmployeeRecognizer
+from backend.services.face_embeddings import (
+    get_embedding_metadata,
+    normalize_encoding_model_name,
+)
 
 
 @pytest.fixture()
@@ -33,7 +37,10 @@ def _make_embedding(vector: np.ndarray) -> bytes:
 
 def test_recognizer_identifies_employee(session_factory):
     now = datetime.now(timezone.utc)
-    vec_a = np.ones(128, dtype=np.float32)
+    metadata = get_embedding_metadata()
+    canonical = normalize_encoding_model_name(metadata["model"])
+    dim = metadata["embedding_dim"]
+    vec_a = np.ones(dim, dtype=np.float32)
 
     with session_factory() as session:
         alice = Employee(name="Alice")
@@ -47,18 +54,22 @@ def test_recognizer_identifies_employee(session_factory):
             updated_at=now,
         )
         sample.id = 1
-        sample.set_embedding(_make_embedding(vec_a), dim=vec_a.size, model="small")
+        sample.set_embedding(_make_embedding(vec_a), dim=vec_a.size, model=canonical)
         session.add(sample)
         session.commit()
 
-    recognizer = EmployeeRecognizer(session_factory, threshold=0.8, encoding_model="small")
+    recognizer = EmployeeRecognizer(
+        session_factory,
+        threshold=0.8,
+        encoding_model=canonical,
+    )
 
     match = recognizer.identify(vec_a)
     assert match is not None
     assert match.employee_name == "Alice"
     assert pytest.approx(match.distance, rel=1e-5) == 0.0
 
-    vec_b = np.zeros(128, dtype=np.float32)
+    vec_b = np.zeros(dim, dtype=np.float32)
     with session_factory() as session:
         bob = Employee(name="Bob")
         session.add(bob)
@@ -71,7 +82,7 @@ def test_recognizer_identifies_employee(session_factory):
             updated_at=now,
         )
         sample.id = 2
-        sample.set_embedding(_make_embedding(vec_b), dim=vec_b.size, model="small")
+        sample.set_embedding(_make_embedding(vec_b), dim=vec_b.size, model=canonical)
         session.add(sample)
         session.commit()
 
