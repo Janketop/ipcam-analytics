@@ -34,6 +34,14 @@ const DashboardPage = () => {
     runInProgress: cleanupInProgress,
     runError: cleanupRunError,
     runSuccess: cleanupRunSuccess,
+    clearSnapshots,
+    clearSnapshotsInProgress,
+    clearSnapshotsError,
+    clearSnapshotsSuccess,
+    clearEvents,
+    clearEventsInProgress,
+    clearEventsError,
+    clearEventsSuccess,
   } = useCleanupInfo(normalizedApiBase);
   const [stats, setStats] = useState<Stat[]>([]);
   const [viewMode, setViewMode] = useState<'live' | 'sim'>('live');
@@ -180,6 +188,14 @@ const DashboardPage = () => {
               runInProgress={cleanupInProgress}
               runError={cleanupRunError}
               runSuccess={cleanupRunSuccess}
+              onClearSnapshots={clearSnapshots}
+              clearSnapshotsInProgress={clearSnapshotsInProgress}
+              clearSnapshotsError={clearSnapshotsError}
+              clearSnapshotsSuccess={clearSnapshotsSuccess}
+              onClearEvents={clearEvents}
+              clearEventsInProgress={clearEventsInProgress}
+              clearEventsError={clearEventsError}
+              clearEventsSuccess={clearEventsSuccess}
             />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               <button
