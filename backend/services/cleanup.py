@@ -286,3 +286,87 @@ def cleanup_expired_events_and_snapshots(
         cutoff_dt,
         face_sample_cutoff_dt,
     )
+
+
+def purge_all_events(session_factory: SessionFactory) -> Tuple[int, int]:
+    """Удаляет все события и связанные с ними карточки лиц."""
+
+    with session_factory() as session:
+        deleted_face_samples = (
+            session.query(FaceSample).delete(synchronize_session=False)
+        )
+        deleted_events = session.query(Event).delete(synchronize_session=False)
+        session.commit()
+
+    logger.info(
+        "Полная очистка: удалено %d событий и %d карточек лиц",
+        deleted_events,
+        deleted_face_samples,
+    )
+
+    return deleted_events, deleted_face_samples
+
+
+def purge_all_snapshots(session_factory: SessionFactory) -> Tuple[int, int, int, int]:
+    """Удаляет все сохранённые кадры и связанные ссылки в базе."""
+
+    deleted_snapshots = 0
+    deleted_dataset_copies = 0
+
+    if SNAPSHOT_DIR.exists():
+        for file_path in SNAPSHOT_DIR.iterdir():
+            if not file_path.is_file():
+                continue
+            try:
+                file_path.unlink()
+                deleted_snapshots += 1
+            except FileNotFoundError:
+                continue
+            except OSError as exc:  # pragma: no cover - защитный блок
+                logger.warning(
+                    "Ошибка при удалении кадра %s: %s",
+                    file_path,
+                    exc,
+                )
+
+    if DATASET_PHONE_USAGE_DIR.exists():
+        for file_path in DATASET_PHONE_USAGE_DIR.iterdir():
+            if not file_path.is_file():
+                continue
+            try:
+                file_path.unlink()
+                deleted_dataset_copies += 1
+            except FileNotFoundError:
+                continue
+            except OSError as exc:  # pragma: no cover - защитный блок
+                logger.warning(
+                    "Ошибка при удалении копии кадра %s: %s",
+                    file_path,
+                    exc,
+                )
+
+    with session_factory() as session:
+        updated_events = (
+            session.query(Event)
+            .filter(Event.snapshot_url.is_not(None))
+            .update({Event.snapshot_url: None}, synchronize_session=False)
+        )
+        deleted_face_samples = (
+            session.query(FaceSample).delete(synchronize_session=False)
+        )
+        session.commit()
+
+    logger.info(
+        "Полная очистка кадров: удалено %d файлов, %d копий и %d карточек лиц, ссылки очищены в %d событиях",
+        deleted_snapshots,
+        deleted_dataset_copies,
+        deleted_face_samples,
+        updated_events,
+    )
+
+    return (
+        deleted_snapshots,
+        deleted_dataset_copies,
+        updated_events,
+        deleted_face_samples,
+    )

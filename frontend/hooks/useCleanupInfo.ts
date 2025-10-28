@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { CleanupRunResponse, CleanupSettings, CleanupState, HealthResponse } from '../types/api';
+import {
+  CleanupClearEventsResponse,
+  CleanupClearSnapshotsResponse,
+  CleanupRunResponse,
+  CleanupSettings,
+  CleanupState,
+  HealthResponse,
+} from '../types/api';
 
 export const useCleanupInfo = (apiBase: string) => {
   const [cleanup, setCleanup] = useState<CleanupState | null>(null);
@@ -9,6 +16,12 @@ export const useCleanupInfo = (apiBase: string) => {
   const [runInProgress, setRunInProgress] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
   const [runSuccess, setRunSuccess] = useState<string | null>(null);
+  const [clearSnapshotsInProgress, setClearSnapshotsInProgress] = useState(false);
+  const [clearSnapshotsError, setClearSnapshotsError] = useState<string | null>(null);
+  const [clearSnapshotsSuccess, setClearSnapshotsSuccess] = useState<string | null>(null);
+  const [clearEventsInProgress, setClearEventsInProgress] = useState(false);
+  const [clearEventsError, setClearEventsError] = useState<string | null>(null);
+  const [clearEventsSuccess, setClearEventsSuccess] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     if (!apiBase) return;
@@ -68,6 +81,74 @@ export const useCleanupInfo = (apiBase: string) => {
     }
   }, [apiBase]);
 
+  const clearSnapshots = useCallback(async () => {
+    if (!apiBase) {
+      setClearSnapshotsError('API не инициализирован. Проверьте настройки подключения.');
+      return;
+    }
+    setClearSnapshotsInProgress(true);
+    setClearSnapshotsError(null);
+    setClearSnapshotsSuccess(null);
+    try {
+      const response = await fetch(`${apiBase}/cleanup/clear-snapshots`, { method: 'POST' });
+      if (!response.ok) {
+        let detail = response.statusText;
+        try {
+          const data = (await response.json()) as { detail?: string };
+          if (data?.detail) {
+            detail = data.detail;
+          }
+        } catch (err) {
+          // ignore json parse errors
+        }
+        throw new Error(detail || 'Не удалось очистить кадры.');
+      }
+      const data = (await response.json()) as CleanupClearSnapshotsResponse;
+      setClearSnapshotsSuccess(
+        `Удалено кадров: ${data.deleted_snapshots}. Очищено копий в датасете: ${data.deleted_dataset_copies}. Обновлены события: ${data.updated_events}. Удалено карточек лиц: ${data.deleted_face_samples}.`,
+      );
+      await refresh();
+    } catch (err) {
+      setClearSnapshotsError(err instanceof Error ? err.message : 'Не удалось очистить кадры.');
+    } finally {
+      setClearSnapshotsInProgress(false);
+    }
+  }, [apiBase, refresh]);
+
+  const clearEvents = useCallback(async () => {
+    if (!apiBase) {
+      setClearEventsError('API не инициализирован. Проверьте настройки подключения.');
+      return;
+    }
+    setClearEventsInProgress(true);
+    setClearEventsError(null);
+    setClearEventsSuccess(null);
+    try {
+      const response = await fetch(`${apiBase}/cleanup/clear-events`, { method: 'POST' });
+      if (!response.ok) {
+        let detail = response.statusText;
+        try {
+          const data = (await response.json()) as { detail?: string };
+          if (data?.detail) {
+            detail = data.detail;
+          }
+        } catch (err) {
+          // ignore json parse errors
+        }
+        throw new Error(detail || 'Не удалось очистить события.');
+      }
+      const data = (await response.json()) as CleanupClearEventsResponse;
+      setClearEventsSuccess(
+        `Удалено событий: ${data.deleted_events}. Удалено карточек лиц: ${data.deleted_face_samples}.`,
+      );
+      await refresh();
+    } catch (err) {
+      setClearEventsError(err instanceof Error ? err.message : 'Не удалось очистить события.');
+    } finally {
+      setClearEventsInProgress(false);
+    }
+  }, [apiBase, refresh]);
+
   useEffect(() => {
     refresh();
   }, [refresh]);
@@ -82,5 +163,13 @@ export const useCleanupInfo = (apiBase: string) => {
     runInProgress,
     runError,
     runSuccess,
+    clearSnapshots,
+    clearSnapshotsInProgress,
+    clearSnapshotsError,
+    clearSnapshotsSuccess,
+    clearEvents,
+    clearEventsInProgress,
+    clearEventsError,
+    clearEventsSuccess,
   };
 };

@@ -1,14 +1,19 @@
 """Эндпоинты для мониторинга состояния сервиса и управления очисткой."""
 from __future__ import annotations
 
-from datetime import datetime
+import asyncio
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from backend.core.config import settings
 from backend.core.dependencies import get_cleanup_state
-from backend.services.cleanup import perform_cleanup
+from backend.services.cleanup import (
+    perform_cleanup,
+    purge_all_events,
+    purge_all_snapshots,
+)
 
 router = APIRouter()
 
@@ -72,4 +77,68 @@ async def run_cleanup(request: Request):
             request.app.state.cleanup_state,
             in_progress=False,
         ),
+    }
+
+
+@router.post("/cleanup/clear-events", status_code=status.HTTP_200_OK)
+async def clear_events(request: Request):
+    cleanup_lock = request.app.state.cleanup_lock
+    async with cleanup_lock:
+        deleted_events, deleted_face_samples = await asyncio.to_thread(
+            purge_all_events,
+            request.app.state.session_factory,
+        )
+        cleanup_state = request.app.state.cleanup_state
+        now = datetime.now(timezone.utc)
+        cleanup_state.update(
+            {
+                "last_run": now,
+                "deleted_events": deleted_events,
+                "deleted_face_samples": deleted_face_samples,
+                "error": None,
+                "cutoff": None,
+                "face_sample_cutoff": None,
+            }
+        )
+
+    return {
+        "ok": True,
+        "deleted_events": deleted_events,
+        "deleted_face_samples": deleted_face_samples,
+    }
+
+
+@router.post("/cleanup/clear-snapshots", status_code=status.HTTP_200_OK)
+async def clear_snapshots(request: Request):
+    cleanup_lock = request.app.state.cleanup_lock
+    async with cleanup_lock:
+        (
+            deleted_snapshots,
+            deleted_dataset_copies,
+            updated_events,
+            deleted_face_samples,
+        ) = await asyncio.to_thread(
+            purge_all_snapshots,
+            request.app.state.session_factory,
+        )
+        cleanup_state = request.app.state.cleanup_state
+        now = datetime.now(timezone.utc)
+        cleanup_state.update(
+            {
+                "last_run": now,
+                "deleted_snapshots": deleted_snapshots,
+                "deleted_dataset_copies": deleted_dataset_copies,
+                "deleted_face_samples": deleted_face_samples,
+                "error": None,
+                "cutoff": None,
+                "face_sample_cutoff": None,
+            }
+        )
+
+    return {
+        "ok": True,
+        "deleted_snapshots": deleted_snapshots,
+        "deleted_dataset_copies": deleted_dataset_copies,
+        "updated_events": updated_events,
+        "deleted_face_samples": deleted_face_samples,
     }

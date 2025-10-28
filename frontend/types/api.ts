@@ -148,3 +148,17 @@ export type CleanupRunResponse = {
   ok: boolean;
   cleanup: CleanupState;
 };
+
+export type CleanupClearEventsResponse = {
+  ok: boolean;
+  deleted_events: number;
+  deleted_face_samples: number;
+};
+
+export type CleanupClearSnapshotsResponse = {
+  ok: boolean;
+  deleted_snapshots: number;
+  deleted_dataset_copies: number;
+  updated_events: number;
+  deleted_face_samples: number;
+};
