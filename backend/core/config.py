@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     visualize: bool = Field(False)
 
     face_recognition_threshold: float = Field(0.6, ge=0.0)
-    face_recognition_model: str = Field("small")
+    face_recognition_model: str = Field("facenet_vggface2")
     face_recognition_presence_cooldown: float = Field(15.0, ge=0.0)
 
     retention_days: int = Field(7, ge=0)
