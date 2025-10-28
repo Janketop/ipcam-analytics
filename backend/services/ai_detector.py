@@ -29,6 +29,70 @@ if TYPE_CHECKING:
 
 PHONE_CLASS = "cell phone"
 
+_DEFAULT_FACE_WEIGHT_URLS: tuple[str, ...] = (
+    "https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n-face.pt",
+    "https://huggingface.co/ultralytics/yolov8/resolve/main/yolov8n-face.pt?download=1",
+)
+
+
+def _download_file(url: str, destination: Path) -> None:
+    """Скачивает файл по прямой ссылке с защитой от частичных загрузок."""
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = destination.with_suffix(destination.suffix + ".download")
+    try:
+        with closing(urlopen(url, timeout=30)) as response, open(tmp_path, "wb") as tmp_file:
+            shutil.copyfileobj(response, tmp_file)
+        tmp_path.replace(destination)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def _ensure_face_weights() -> str:
+    """Возвращает путь до весов face-модели, скачивая их при необходимости."""
+
+    configured = settings.yolo_face_model.strip()
+    if not configured:
+        raise ValueError("Не задано имя весов для детектора лиц")
+
+    preferred_path = settings.yolo_face_model_path
+    candidates = [Path(configured)]
+    if preferred_path not in candidates:
+        candidates.append(preferred_path)
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+
+    tried_urls: list[str] = []
+    manual_url = (settings.yolo_face_model_url or "").strip()
+    if manual_url:
+        tried_urls.append(manual_url)
+    for fallback in _DEFAULT_FACE_WEIGHT_URLS:
+        if fallback not in tried_urls:
+            tried_urls.append(fallback)
+
+    for url in tried_urls:
+        try:
+            logger.info("Скачиваю веса детектора лиц из %s", url)
+            _download_file(url, preferred_path)
+            return str(preferred_path)
+        except URLError as error:
+            logger.error("Не удалось скачать веса детектора лиц (%s): %s", url, error)
+        except Exception:
+            logger.exception(
+                "Непредвиденная ошибка при скачивании весов детектора лиц из %s",
+                url,
+            )
+
+    raise FileNotFoundError(
+        "Не удалось получить веса детектора лиц. Задайте корректный путь или URL в настройках",
+    )
+
 
 def _download_file(url: str, destination: Path) -> None:
     """Скачивает файл по прямой ссылке с защитой от частичных загрузок."""
@@ -122,7 +186,10 @@ class AIDetector:
 
         det_weights = settings.yolo_det_model
         pose_weights = settings.yolo_pose_model
-        face_weights = _ensure_face_weights()
+        try:
+            face_weights = _ensure_face_weights()
+        except FileNotFoundError as exc:  # pragma: no cover - зависит от окружения
+            raise RuntimeError(str(exc)) from exc
         self.device_preference = settings.yolo_device
         self.device = resolve_device(self.device_preference, settings.cuda_visible_devices)
 
