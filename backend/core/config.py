@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     visualize: bool = Field(False)
 
     face_recognition_threshold: float = Field(0.6, ge=0.0)
-    face_recognition_model: str = Field("small")
+    face_recognition_model: str = Field("facenet_vggface2")
     face_recognition_presence_cooldown: float = Field(15.0, ge=0.0)
 
     retention_days: int = Field(7, ge=0)
@@ -83,6 +83,9 @@ class Settings(BaseSettings):
     yolo_det_model: str = Field("yolov8n.pt")
     yolo_pose_model: str = Field("yolov8n-pose.pt")
     yolo_face_model: str = Field("yolov8n-face.pt")
+    yolo_face_model_url: Optional[str] = Field(
+        "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n-face.pt"
+    )
     yolo_image_size: int = Field(640, ge=32)
     yolo_face_conf: float = Field(0.35, ge=0.05)
 
@@ -113,6 +116,15 @@ class Settings(BaseSettings):
         port = self.postgres_port
         database = self.postgres_db
         return f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{database}"
+
+    @property
+    def yolo_face_model_path(self) -> Path:
+        """Возвращает абсолютный путь до весов модели распознавания лиц."""
+
+        raw_path = Path(self.yolo_face_model)
+        if raw_path.is_absolute():
+            return raw_path
+        return (_BACKEND_DIR / raw_path).resolve()
 
     @property
     def cors_allow_origin_list(self) -> List[str]:
