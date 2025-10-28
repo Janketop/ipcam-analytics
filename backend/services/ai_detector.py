@@ -65,16 +65,19 @@ class AIDetector:
 
         det_weights = settings.yolo_det_model
         pose_weights = settings.yolo_pose_model
+        face_weights = settings.yolo_face_model
         self.device_preference = settings.yolo_device
         self.device = resolve_device(self.device_preference, settings.cuda_visible_devices)
 
         self.det = YOLO(det_weights)
         self.pose = YOLO(pose_weights)
+        self.face_det = YOLO(face_weights)
         self.device_error: Optional[str] = None
         self.actual_device: Optional[str] = None
         try:
             self.det.to(self.device)
             self.pose.to(self.device)
+            self.face_det.to(self.device)
         except Exception as exc:
             self.device_error = str(exc).strip() or None
         finally:
@@ -90,6 +93,7 @@ class AIDetector:
         self.det_imgsz = settings.yolo_image_size
         self.det_conf = settings.phone_det_conf
         self.pose_conf = settings.pose_det_conf
+        self.face_conf = settings.yolo_face_conf
         self.phone_score_threshold = settings.phone_score_threshold
         self.phone_hand_dist_ratio = settings.phone_hand_dist_ratio
         self.phone_head_dist_ratio = settings.phone_head_dist_ratio
@@ -378,6 +382,26 @@ class AIDetector:
                 det_kwargs["device"] = self.predict_device
             det_res = self.det(frame, **det_kwargs)[0]
 
+        face_detections: List[Dict[str, Any]] = []
+        if detect_person:
+            face_kwargs = {"imgsz": self.det_imgsz, "conf": self.face_conf}
+            if self.predict_device:
+                face_kwargs["device"] = self.predict_device
+            try:
+                face_results = self.face_det(frame, **face_kwargs)
+            except Exception:
+                face_results = None
+            face_prediction = face_results[0] if face_results else None
+            boxes = getattr(face_prediction, "boxes", None)
+            if boxes is not None:
+                for b in boxes:
+                    try:
+                        xyxy = b.xyxy[0].cpu().numpy()
+                    except Exception:
+                        xyxy = np.asarray(b.xyxy[0])
+                    conf = float(b.conf[0]) if getattr(b, "conf", None) is not None else 0.0
+                    face_detections.append({"bbox": xyxy, "conf": conf, "used": False})
+
         if self.phone_idx is None and det_res is not None and detect_person:
             names = getattr(self.det.model, "names", None) or getattr(self.det, "names", {})
             for k, v in names.items():
@@ -419,6 +443,21 @@ class AIDetector:
         best_conf = 0.0
         need_overlay = self.visualize
         vis = frame.copy() if need_overlay else None
+
+        if detect_person and need_overlay and vis is not None and face_detections:
+            face_color = (186, 85, 211)
+            for face in face_detections:
+                fx1, fy1, fx2, fy2 = map(int, face["bbox"])
+                cv2.rectangle(vis, (fx1, fy1), (fx2, fy2), face_color, 2)
+                cv2.putText(
+                    vis,
+                    f"FACE {face['conf']:.2f}",
+                    (fx1, max(20, fy1 - 6)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    face_color,
+                    2,
+                )
 
         car_events: List[Dict[str, Any]] = []
         now_monotonic = time.monotonic()
@@ -519,6 +558,25 @@ class AIDetector:
 
         recognizer = self.employee_recognizer
 
+        def _bbox_iou(box_a: Sequence[float], box_b: Sequence[float]) -> float:
+            ax1, ay1, ax2, ay2 = map(float, box_a)
+            bx1, by1, bx2, by2 = map(float, box_b)
+            inter_x1 = max(ax1, bx1)
+            inter_y1 = max(ay1, by1)
+            inter_x2 = min(ax2, bx2)
+            inter_y2 = min(ay2, by2)
+            inter_w = max(0.0, inter_x2 - inter_x1)
+            inter_h = max(0.0, inter_y2 - inter_y1)
+            inter_area = inter_w * inter_h
+            if inter_area <= 0.0:
+                return 0.0
+            area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+            area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+            denom = area_a + area_b - inter_area
+            if denom <= 0.0:
+                return 0.0
+            return inter_area / denom
+
         for kpts, bbox, kconf, box_id in people_iter:
             bbox_arr = np.asarray(bbox, dtype=np.float32).reshape(-1)
             if bbox_arr.size < 4:
@@ -538,12 +596,38 @@ class AIDetector:
 
             bbox_h = max(1.0, float(bbox_arr[3] - bbox_arr[1]))
 
+            face_bbox_coords: Optional[List[float]] = None
+            face_conf_score: Optional[float] = None
+            if face_detections:
+                best_face = None
+                best_score = 0.0
+                for face in face_detections:
+                    if face.get("used"):
+                        continue
+                    iou = _bbox_iou(bbox_arr[:4], face["bbox"])
+                    fx1, fy1, fx2, fy2 = face["bbox"]
+                    cx = (fx1 + fx2) * 0.5
+                    cy = (fy1 + fy2) * 0.5
+                    inside = bbox_arr[0] <= cx <= bbox_arr[2] and bbox_arr[1] <= cy <= bbox_arr[3]
+                    score = iou + (0.15 if inside else 0.0)
+                    if score > best_score:
+                        best_score = score
+                        best_face = face
+                if best_face is not None:
+                    best_face["used"] = True
+                    face_bbox_coords = (
+                        np.asarray(best_face["bbox"], dtype=np.float32).reshape(-1).tolist()
+                    )
+                    face_conf_score = float(best_face.get("conf", 0.0))
+
+            if face_bbox_coords is None:
+                face_bbox_coords = bbox_arr[:4].tolist()
+
             employee_name = None
             employee_info: Optional[Dict[str, Any]] = None
             if recognizer is not None:
                 try:
-                    bbox_coords = bbox_arr[:4].tolist()
-                    embedding_result = recognizer.compute_embedding(frame, bbox_coords)
+                    embedding_result = recognizer.compute_embedding(frame, face_bbox_coords)
                 except Exception:
                     logger.exception(
                         "[%s] Ошибка при подготовке эмбеддинга лица",
@@ -680,6 +764,8 @@ class AIDetector:
                     "keypoints": kpts.copy(),
                     "confidence": mean_conf,
                     "bbox": bbox_arr[:4].tolist(),
+                    "face_bbox": face_bbox_coords,
+                    "face_confidence": face_conf_score,
                     "employee_name": employee_name,
                     "employee": employee_info,
                 }
