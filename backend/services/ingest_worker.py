@@ -772,18 +772,18 @@ class IngestWorker(Thread):
                                         captured_at=ts,
                                     )
                                     session.add(sample)
-                        persisted_events.append(
-                            {
-                                "id": event.id,
-                                "camera": self.name,
-                                "type": payload["type"],
-                                "start_ts": event.start_ts,
-                                "end_ts": event.end_ts,
-                                "confidence": payload["confidence"],
-                                "snapshot_url": snap_url,
-                                "meta": meta,
-                            }
-                        )
+                            persisted_events.append(
+                                {
+                                    "id": event.id,
+                                    "camera": self.name,
+                                    "type": payload["type"],
+                                    "start_ts": event.start_ts,
+                                    "end_ts": event.end_ts,
+                                    "confidence": payload["confidence"],
+                                    "snapshot_url": snap_url,
+                                    "meta": meta,
+                                }
+                            )
                         session.commit()
                     if self.snapshot_candidates:
                         self.snapshot_candidates.clear()
