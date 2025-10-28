@@ -12,6 +12,14 @@ type CleanupStatusProps = {
   runInProgress: boolean;
   runError: string | null;
   runSuccess: string | null;
+  onClearSnapshots: () => Promise<void> | void;
+  clearSnapshotsInProgress: boolean;
+  clearSnapshotsError: string | null;
+  clearSnapshotsSuccess: string | null;
+  onClearEvents: () => Promise<void> | void;
+  clearEventsInProgress: boolean;
+  clearEventsError: string | null;
+  clearEventsSuccess: string | null;
 };
 
 const infoRowStyle: CSSProperties = {
@@ -32,6 +40,14 @@ const CleanupStatus = ({
   runInProgress,
   runError,
   runSuccess,
+  onClearSnapshots,
+  clearSnapshotsInProgress,
+  clearSnapshotsError,
+  clearSnapshotsSuccess,
+  onClearEvents,
+  clearEventsInProgress,
+  clearEventsError,
+  clearEventsSuccess,
 }: CleanupStatusProps) => {
   return (
     <div
@@ -137,6 +153,75 @@ const CleanupStatus = ({
         </button>
         {runSuccess && <span style={{ fontSize: 12, color: '#16a34a' }}>{runSuccess}</span>}
         {runError && <span style={{ fontSize: 12, color: '#dc2626' }}>{runError}</span>}
+      </div>
+
+      <div
+        style={{
+          display: 'grid',
+          gap: 10,
+          borderTop: '1px solid #e2e8f0',
+          paddingTop: 10,
+        }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <button
+            onClick={() => onClearSnapshots()}
+            disabled={
+              clearSnapshotsInProgress || runInProgress || cleanup?.in_progress || clearEventsInProgress
+            }
+            style={{
+              padding: '8px 12px',
+              borderRadius: 6,
+              border: 'none',
+              backgroundColor:
+                clearSnapshotsInProgress || runInProgress || cleanup?.in_progress || clearEventsInProgress
+                  ? '#94a3b8'
+                  : '#0f766e',
+              color: '#fff',
+              cursor:
+                clearSnapshotsInProgress || runInProgress || cleanup?.in_progress || clearEventsInProgress
+                  ? 'not-allowed'
+                  : 'pointer',
+              fontWeight: 600,
+              minHeight: 40,
+            }}
+          >
+            {clearSnapshotsInProgress ? 'Удаляем кадры…' : 'Удалить все кадры и карточки'}
+          </button>
+          {clearSnapshotsSuccess && (
+            <span style={{ fontSize: 12, color: '#16a34a' }}>{clearSnapshotsSuccess}</span>
+          )}
+          {clearSnapshotsError && (
+            <span style={{ fontSize: 12, color: '#dc2626' }}>{clearSnapshotsError}</span>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <button
+            onClick={() => onClearEvents()}
+            disabled={clearEventsInProgress || runInProgress || cleanup?.in_progress || clearSnapshotsInProgress}
+            style={{
+              padding: '8px 12px',
+              borderRadius: 6,
+              border: 'none',
+              backgroundColor:
+                clearEventsInProgress || runInProgress || cleanup?.in_progress || clearSnapshotsInProgress
+                  ? '#94a3b8'
+                  : '#dc2626',
+              color: '#fff',
+              cursor:
+                clearEventsInProgress || runInProgress || cleanup?.in_progress || clearSnapshotsInProgress
+                  ? 'not-allowed'
+                  : 'pointer',
+              fontWeight: 600,
+              minHeight: 40,
+            }}
+          >
+            {clearEventsInProgress ? 'Удаляем события…' : 'Удалить все события'}
+          </button>
+          {clearEventsSuccess && <span style={{ fontSize: 12, color: '#16a34a' }}>{clearEventsSuccess}</span>}
+          {clearEventsError && <span style={{ fontSize: 12, color: '#dc2626' }}>{clearEventsError}</span>}
+        </div>
       </div>
     </div>
   );
