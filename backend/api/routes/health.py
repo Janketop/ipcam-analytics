@@ -27,6 +27,7 @@ def health(cleanup_state=Depends(get_cleanup_state)):
             "cutoff": cutoff.isoformat() if isinstance(cutoff, datetime) else None,
             "deleted_events": cleanup_state.get("deleted_events", 0),
             "deleted_snapshots": cleanup_state.get("deleted_snapshots", 0),
+            "deleted_dataset_copies": cleanup_state.get("deleted_dataset_copies", 0),
             "deleted_face_samples": cleanup_state.get("deleted_face_samples", 0),
             "face_sample_cutoff": face_sample_cutoff.isoformat()
             if isinstance(face_sample_cutoff, datetime)
