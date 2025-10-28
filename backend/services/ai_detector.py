@@ -29,9 +29,20 @@ if TYPE_CHECKING:
 
 PHONE_CLASS = "cell phone"
 
-_DEFAULT_FACE_WEIGHT_URLS: tuple[str, ...] = (
-    "https://github.com/ultralytics/assets/releases/download/v8.1.0/yolov8n-face.pt",
-    "https://github.com/ultralytics/assets/releases/download/v8.0.0/yolov8n-face.pt",
+# Поддерживаем несколько релизов Ultralytics assets, чтобы не зависеть от конкретного тега.
+# См. https://github.com/ultralytics/assets/releases
+_FACE_RELEASE_TAGS: tuple[str, ...] = (
+    "v8.1.0",
+    "v8.0.0",
+    "v8.2.0",
+    "v8.3.0",
+    "v0.0.0",
+)
+
+_DEFAULT_FACE_WEIGHT_URLS: tuple[str, ...] = tuple(
+    f"https://github.com/ultralytics/assets/releases/download/{tag}/yolov8n-face.pt"
+    for tag in _FACE_RELEASE_TAGS
+) + (
     "https://huggingface.co/ultralytics/yolov8/resolve/main/yolov8n-face.pt?download=1",
 )
 
@@ -94,58 +105,6 @@ def _ensure_face_weights() -> str:
     raise FileNotFoundError(
         "Не удалось получить веса детектора лиц. Задайте корректный путь или URL в настройках",
     )
-
-
-def _download_file(url: str, destination: Path) -> None:
-    """Скачивает файл по прямой ссылке с защитой от частичных загрузок."""
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = destination.with_suffix(destination.suffix + ".download")
-    try:
-        with closing(urlopen(url, timeout=30)) as response, open(tmp_path, "wb") as tmp_file:
-            shutil.copyfileobj(response, tmp_file)
-        tmp_path.replace(destination)
-    finally:
-        if tmp_path.exists():
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass
-
-
-def _ensure_face_weights() -> str:
-    """Возвращает путь до весов face-модели, скачивая их при необходимости."""
-
-    configured = settings.yolo_face_model.strip()
-    if not configured:
-        raise ValueError("Не задано имя весов для детектора лиц")
-
-    preferred_path = settings.yolo_face_model_path
-    candidates = [Path(configured)]
-    if preferred_path not in candidates:
-        candidates.append(preferred_path)
-
-    for candidate in candidates:
-        if candidate.is_file():
-            return str(candidate)
-
-    url = (settings.yolo_face_model_url or "").strip()
-    if url:
-        try:
-            logger.info("Скачиваю веса детектора лиц из %s", url)
-            _download_file(url, preferred_path)
-            return str(preferred_path)
-        except URLError as error:
-            logger.error("Не удалось скачать веса детектора лиц: %s", error)
-        except Exception:
-            logger.exception("Непредвиденная ошибка при скачивании весов детектора лиц")
-
-    logger.warning(
-        "Файл весов детектора лиц '%s' не найден. Проверьте путь или задайте URL для скачивания.",
-        configured,
-    )
-
-    return configured
 
 
 def resolve_device(preferred: Optional[str] = None, cuda_env: Optional[str] = None) -> str:
