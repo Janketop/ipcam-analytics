@@ -49,16 +49,16 @@ def test_candidate_urls_order(monkeypatch):
         ai_detector,
         "_fetch_github_face_weight_urls",
         lambda: [
-            "https://example.org/yolo11n-face.pt",
-            "https://example.org/yolo11n-face.pt",
-            "https://example.org/yolov8n-face.pt",
+            "https://example.org/yolo11n.pt",
+            "https://example.org/yolo11n.pt",
+            "https://example.org/yolov8n.pt",
         ],
     )
     urls = ai_detector._candidate_face_weight_urls("https://manual/url.pt")
     expected_prefix = [
         "https://manual/url.pt",
-        "https://example.org/yolo11n-face.pt",
-        "https://example.org/yolov8n-face.pt",
+        "https://example.org/yolo11n.pt",
+        "https://example.org/yolov8n.pt",
     ]
     assert urls[: len(expected_prefix)] == expected_prefix
     assert len(urls) == len(set(urls))
