@@ -96,3 +96,17 @@ def test_ensure_face_weights_downloads(monkeypatch, tmp_path, restore_settings):
     resolved = ai_detector._ensure_face_weights()
     assert resolved == str(destination)
     assert downloaded == ["https://primary.example/face.pt"]
+
+
+def test_ensure_face_weights_returns_none_when_missing(monkeypatch, tmp_path, restore_settings, caplog):
+    destination = tmp_path / "face.pt"
+    monkeypatch.setattr(settings, "yolo_face_model", str(destination))
+    monkeypatch.setattr(settings, "yolo_face_model_url", "")
+
+    monkeypatch.setattr(ai_detector, "_download_file", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError()))
+    monkeypatch.setattr(ai_detector, "_candidate_face_weight_urls", lambda _manual: ["https://invalid/file.pt"])
+
+    with caplog.at_level("WARNING"):
+        resolved = ai_detector._ensure_face_weights(allow_missing=True)
+
+    assert resolved is None
