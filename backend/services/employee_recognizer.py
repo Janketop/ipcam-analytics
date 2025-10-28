@@ -19,6 +19,8 @@ from backend.models import Employee, FaceSample
 from backend.services.face_embeddings import (
     FaceEmbeddingResult,
     compute_face_embedding_for_bbox,
+    get_embedding_metadata,
+    normalize_encoding_model_name,
 )
 
 _CACHE_VERSION = 0
@@ -59,11 +61,21 @@ class EmployeeRecognizer:
         self.threshold = float(
             threshold if threshold is not None else settings.face_recognition_threshold
         )
-        model_name = (encoding_model or settings.face_recognition_model or "small").strip()
-        self.encoding_model = model_name or "small"
+        model_name = normalize_encoding_model_name(
+            encoding_model or settings.face_recognition_model
+        )
+        self.encoding_model = model_name
+        self._model_metadata = get_embedding_metadata(model_name)
         self.detection_model = "hog"
         self.num_jitters = 1
         self.padding = 0.15
+
+        logger.debug(
+            "Инициализирован распознаватель лиц (модель=%s, embedding_dim=%s, устройство=%s)",
+            self.encoding_model,
+            self._model_metadata.get("embedding_dim"),
+            self._model_metadata.get("device"),
+        )
 
         self._tree: Optional[KDTree] = None
         self._embeddings: Optional[np.ndarray] = None
@@ -138,7 +150,7 @@ class EmployeeRecognizer:
                 skipped += 1
                 continue
 
-            model_name = (model or self.encoding_model).strip() or self.encoding_model
+            model_name = normalize_encoding_model_name(model or self.encoding_model)
             if model_name != self.encoding_model:
                 logger.debug(
                     "Пропускаю эмбеддинг сотрудника %s: модель %s != %s",
