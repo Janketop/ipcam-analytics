@@ -84,7 +84,7 @@ class Settings(BaseSettings):
     yolo_pose_model: str = Field("yolov8n-pose.pt")
     yolo_face_model: str = Field("yolov8n-face.pt")
     yolo_face_model_url: Optional[str] = Field(
-        "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n-face.pt"
+        "https://github.com/ultralytics/assets/releases/download/v8.1.0/yolov8n-face.pt"
     )
     yolo_image_size: int = Field(640, ge=32)
     yolo_face_conf: float = Field(0.35, ge=0.05)
