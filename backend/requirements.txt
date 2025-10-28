@@ -9,6 +9,7 @@ python-dotenv==1.0.1
 opencv-python-headless==4.10.0.84
 torch==2.3.1+cu121
 torchvision==0.18.1+cu121
+facenet-pytorch==2.5.3
 ultralytics==8.3.44
 numpy==1.26.4
 websockets==13.1
