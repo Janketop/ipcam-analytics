@@ -602,13 +602,18 @@ class IngestWorker(Thread):
                     self.phone_max_confidence = 0.0
                     self.phone_snapshot = None
 
-                if self.visualize and vis is not None:
+                display_frame = vis if (self.visualize and vis is not None) else frame
+                if display_frame is not None:
                     try:
-                        ret, buf = cv2.imencode(".jpg", vis, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                        ret, buf = cv2.imencode(
+                            ".jpg",
+                            display_frame,
+                            [int(cv2.IMWRITE_JPEG_QUALITY), 80],
+                        )
                         if ret:
                             self.last_visual_jpeg = buf.tobytes()
                     except Exception:
-                        logger.exception("[%s] Не удалось сформировать визуализацию кадра", self.name)
+                        logger.exception("[%s] Не удалось подготовить кадр для живого потока", self.name)
 
                 for activity in activity_updates:
                     if not activity.get("changed"):
