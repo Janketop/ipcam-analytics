@@ -8,7 +8,11 @@ from backend.core.database import SessionFactory, get_session_factory
 from backend.core.logger import logger
 from backend.models import FaceSample
 from backend.services.employee_recognizer import EmployeeRecognizer
-from backend.services.face_embeddings import compute_face_embedding_from_snapshot
+from backend.services.face_embeddings import (
+    compute_face_embedding_from_snapshot,
+    get_embedding_metadata,
+    normalize_encoding_model_name,
+)
 
 
 def rebuild_missing_face_embeddings(
@@ -18,9 +22,10 @@ def rebuild_missing_face_embeddings(
 ) -> int:
     """Пересчитывает эмбеддинги для снимков сотрудников без данных."""
 
-    target_model = (encoding_model or settings.face_recognition_model or "small").strip()
-    if not target_model:
-        target_model = "small"
+    target_model = normalize_encoding_model_name(
+        encoding_model or settings.face_recognition_model
+    )
+    metadata = get_embedding_metadata(target_model)
 
     updated = 0
     skipped = 0
@@ -42,8 +47,10 @@ def rebuild_missing_face_embeddings(
 
         if not samples:
             logger.info(
-                "Все эмбеддинги лиц уже вычислены (модель %s)", target_model
-            )
+                "Все эмбеддинги лиц уже вычислены (модель %s, dim=%s)",
+                target_model,
+                metadata["embedding_dim"],
+                )
             return 0
 
         for sample in samples:
