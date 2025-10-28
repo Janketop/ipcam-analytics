@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     visualize: bool = Field(False)
 
     face_recognition_threshold: float = Field(0.6, ge=0.0)
-    face_recognition_model: str = Field("small")
+    face_recognition_model: str = Field("facenet_vggface2")
     face_recognition_presence_cooldown: float = Field(15.0, ge=0.0)
 
     retention_days: int = Field(7, ge=0)
@@ -82,9 +82,23 @@ class Settings(BaseSettings):
     cuda_visible_devices: Optional[str] = Field(None)
     yolo_det_model: str = Field("yolov8n.pt")
     yolo_pose_model: str = Field("yolov8n-pose.pt")
-    yolo_face_model: str = Field("yolov8n-face.pt")
+    yolo_face_model: str = Field("weights/yolo11n-face.pt")
+    yolo_face_model_url: Optional[str] = Field(
+        "https://github.com/ultralytics/assets/releases/latest/download/yolo11n-face.pt"
+    )
     yolo_image_size: int = Field(640, ge=32)
     yolo_face_conf: float = Field(0.35, ge=0.05)
+
+    face_training_dataset_root: str = Field("dataset/widerface")
+    face_training_skip_download: bool = Field(False)
+    face_training_epochs: int = Field(50, ge=1)
+    face_training_batch: int = Field(32, ge=1)
+    face_training_imgsz: int = Field(640, ge=32)
+    face_training_device: Optional[str] = Field(None)
+    face_training_project_dir: str = Field("runs/face")
+    face_training_run_name: str = Field("yolo11n-widerface")
+    face_training_base_weights: str = Field("yolo11n.pt")
+    face_training_output_weights: str = Field("backend/weights/yolo11n-face.pt")
 
     phone_det_conf: float = Field(0.3, ge=0.05)
     pose_det_conf: float = Field(0.3, ge=0.05)
@@ -113,6 +127,39 @@ class Settings(BaseSettings):
         port = self.postgres_port
         database = self.postgres_db
         return f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{database}"
+
+    @property
+    def yolo_face_model_path(self) -> Path:
+        """Возвращает абсолютный путь до весов модели распознавания лиц."""
+
+        raw_path = Path(self.yolo_face_model)
+        if raw_path.is_absolute():
+            return raw_path
+        return (_BACKEND_DIR / raw_path).resolve()
+
+    def resolve_project_path(self, raw_path: str | Path) -> Path:
+        """Преобразует относительный путь в абсолютный относительно корня проекта."""
+
+        path = Path(raw_path)
+        if path.is_absolute():
+            return path
+        return (_PROJECT_ROOT / path).resolve()
+
+    @property
+    def face_training_dataset_root_path(self) -> Path:
+        return self.resolve_project_path(self.face_training_dataset_root)
+
+    @property
+    def face_training_project_dir_path(self) -> Path:
+        return self.resolve_project_path(self.face_training_project_dir)
+
+    @property
+    def face_training_output_weights_path(self) -> Path:
+        return self.resolve_project_path(self.face_training_output_weights)
+
+    @property
+    def face_training_base_weights_path(self) -> Path:
+        return self.resolve_project_path(self.face_training_base_weights)
 
     @property
     def cors_allow_origin_list(self) -> List[str]:
