@@ -13,7 +13,7 @@ from sqlalchemy import and_, or_, select
 from backend.core.database import SessionFactory
 from backend.core.logger import logger
 from backend.models import Event, FaceSample
-from backend.core.paths import SNAPSHOT_DIR
+from backend.core.paths import DATASET_PHONE_USAGE_DIR, SNAPSHOT_DIR
 
 
 FACE_SAMPLE_UNUSED_STATUSES: Set[str] = {
@@ -40,6 +40,7 @@ async def perform_cleanup(
             deleted_events,
             deleted_snapshots,
             deleted_face_samples,
+            deleted_dataset_copies,
             cutoff_dt,
             face_sample_cutoff_dt,
         ) = await asyncio.to_thread(
@@ -55,16 +56,18 @@ async def perform_cleanup(
                 "deleted_events": deleted_events,
                 "deleted_snapshots": deleted_snapshots,
                 "deleted_face_samples": deleted_face_samples,
+                "deleted_dataset_copies": deleted_dataset_copies,
                 "error": None,
                 "cutoff": cutoff_dt,
                 "face_sample_cutoff": face_sample_cutoff_dt,
             }
         )
         logger.info(
-            "Очистка завершена: удалено %d событий, %d снимков и %d карточек лиц "
+            "Очистка завершена: удалено %d событий, %d снимков, %d копий в датасете и %d карточек лиц "
             "(границы событий=%s, неразмеченных=%s)",
             deleted_events,
             deleted_snapshots,
+            deleted_dataset_copies,
             deleted_face_samples,
             cutoff_dt.isoformat(),
             face_sample_cutoff_dt.isoformat(),
@@ -108,7 +111,7 @@ def cleanup_expired_events_and_snapshots(
     retention_days: int,
     face_sample_retention_days: int,
     started_at: Optional[datetime] = None,
-) -> Tuple[int, int, int, datetime, datetime]:
+) -> Tuple[int, int, int, int, datetime, datetime]:
     now = datetime.now(timezone.utc)
     cutoff_dt = now - timedelta(days=retention_days)
     face_sample_cutoff_dt = now - timedelta(days=face_sample_retention_days)
@@ -152,6 +155,7 @@ def cleanup_expired_events_and_snapshots(
     existing_files: Set[str] = set()
 
     deleted_snapshots = 0
+    deleted_dataset_copies = 0
     for file_path in SNAPSHOT_DIR.iterdir():
         if not file_path.is_file():
             continue
@@ -195,6 +199,23 @@ def cleanup_expired_events_and_snapshots(
                     exc,
                 )
                 continue
+
+            dataset_copy = DATASET_PHONE_USAGE_DIR / file_path.name
+            if dataset_copy.exists() and dataset_copy.is_file():
+                try:
+                    dataset_copy.unlink()
+                    deleted_dataset_copies += 1
+                except FileNotFoundError:
+                    logger.debug(
+                        "Файл %s уже удалён из датасета",
+                        dataset_copy,
+                    )
+                except OSError as exc:
+                    logger.warning(
+                        "Ошибка при удалении копии кадра %s: %s",
+                        dataset_copy,
+                        exc,
+                    )
 
     missing_snapshot_event_ids = [
         event_id
@@ -261,6 +282,7 @@ def cleanup_expired_events_and_snapshots(
         deleted_events,
         deleted_snapshots,
         deleted_face_samples,
+        deleted_dataset_copies,
         cutoff_dt,
         face_sample_cutoff_dt,
     )

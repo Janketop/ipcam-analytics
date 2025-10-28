@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
+import CleanupStatus from '../components/CleanupStatus';
 import Layout from '../components/Layout';
 import LiveStreamViewer from '../components/LiveStreamViewer';
 import RuntimeStatus from '../components/RuntimeStatus';
@@ -7,6 +8,7 @@ import SimulatedVisualization from '../components/SimulatedVisualization';
 import StatsChart from '../components/StatsChart';
 import { useApiBase } from '../hooks/useApiBase';
 import { useCameras } from '../hooks/useCameras';
+import { useCleanupInfo } from '../hooks/useCleanupInfo';
 import { useRuntimeInfo } from '../hooks/useRuntimeInfo';
 import { Stat } from '../types/api';
 
@@ -22,6 +24,17 @@ const DashboardPage = () => {
   const { normalizedApiBase } = useApiBase();
   const { cameras } = useCameras(normalizedApiBase);
   const { runtime, error: runtimeError } = useRuntimeInfo(normalizedApiBase);
+  const {
+    cleanup,
+    settings: cleanupSettings,
+    loading: cleanupLoading,
+    error: cleanupError,
+    refresh: refreshCleanup,
+    runCleanup,
+    runInProgress: cleanupInProgress,
+    runError: cleanupRunError,
+    runSuccess: cleanupRunSuccess,
+  } = useCleanupInfo(normalizedApiBase);
   const [stats, setStats] = useState<Stat[]>([]);
   const [viewMode, setViewMode] = useState<'live' | 'sim'>('live');
   const [simEvents, setSimEvents] = useState<SimEvent[]>([]);
@@ -157,6 +170,17 @@ const DashboardPage = () => {
             </style>
             <h3 style={{ margin: '0 0 4px' }}>Статус вычислений</h3>
             <RuntimeStatus runtime={runtime} error={runtimeError} />
+            <CleanupStatus
+              cleanup={cleanup}
+              settings={cleanupSettings}
+              loading={cleanupLoading}
+              error={cleanupError}
+              onRefresh={refreshCleanup}
+              onRun={runCleanup}
+              runInProgress={cleanupInProgress}
+              runError={cleanupRunError}
+              runSuccess={cleanupRunSuccess}
+            />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               <button
                 onClick={handleSelfTraining}
