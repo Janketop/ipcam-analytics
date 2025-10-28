@@ -82,7 +82,9 @@ class Settings(BaseSettings):
     cuda_visible_devices: Optional[str] = Field(None)
     yolo_det_model: str = Field("yolov8n.pt")
     yolo_pose_model: str = Field("yolov8n-pose.pt")
+    yolo_face_model: str = Field("yolov8n-face.pt")
     yolo_image_size: int = Field(640, ge=32)
+    yolo_face_conf: float = Field(0.35, ge=0.05)
 
     phone_det_conf: float = Field(0.3, ge=0.05)
     pose_det_conf: float = Field(0.3, ge=0.05)
