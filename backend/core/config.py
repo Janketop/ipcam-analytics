@@ -82,9 +82,9 @@ class Settings(BaseSettings):
     cuda_visible_devices: Optional[str] = Field(None)
     yolo_det_model: str = Field("yolov8n.pt")
     yolo_pose_model: str = Field("yolov8n-pose.pt")
-    yolo_face_model: str = Field("weights/yolo11n-face.pt")
+    yolo_face_model: str = Field("weights/yolo11n.pt")
     yolo_face_model_url: Optional[str] = Field(
-        "https://github.com/ultralytics/assets/releases/latest/download/yolo11n-face.pt"
+        "https://github.com/ultralytics/assets/releases/latest/download/yolo11n.pt"
     )
     yolo_image_size: int = Field(640, ge=32)
     yolo_face_conf: float = Field(0.35, ge=0.05)

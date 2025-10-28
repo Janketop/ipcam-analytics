@@ -34,9 +34,9 @@ PHONE_CLASS = "cell phone"
 _GITHUB_RELEASES_API = "https://api.github.com/repos/ultralytics/assets/releases"
 
 _DEFAULT_FACE_WEIGHT_URLS: tuple[str, ...] = (
-    "https://github.com/ultralytics/assets/releases/latest/download/yolo11n-face.pt",
-    "https://huggingface.co/ultralytics/yolo11/resolve/main/yolo11n-face.pt?download=1",
-    "https://huggingface.co/ultralytics/yolov8/resolve/main/yolov8n-face.pt?download=1",
+    "https://github.com/ultralytics/assets/releases/latest/download/yolo11n.pt",
+    "https://huggingface.co/ultralytics/yolo11/resolve/main/yolo11n.pt?download=1",
+    "https://huggingface.co/ultralytics/yolov8/resolve/main/yolov8n.pt?download=1",
 )
 
 
@@ -85,9 +85,11 @@ def _fetch_github_face_weight_urls() -> List[str]:
             if not isinstance(asset, dict):
                 continue
             name = str(asset.get("name") or "").lower()
-            if "face" not in name or not name.endswith(".pt"):
+            if not name.endswith(".pt"):
                 continue
-            if "yolo" not in name:
+            if "yolo11n" not in name:
+                continue
+            if any(suffix in name for suffix in ("pose", "seg", "cls", "face")):
                 continue
             download = asset.get("browser_download_url")
             if download:
