@@ -69,6 +69,7 @@ def create_app() -> FastAPI:
         "last_run": None,  # type: Optional[datetime]
         "deleted_events": 0,
         "deleted_snapshots": 0,
+        "deleted_dataset_copies": 0,
         "deleted_face_samples": 0,
         "error": None,
         "cutoff": None,
