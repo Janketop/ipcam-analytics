@@ -127,8 +127,13 @@ def _download_file(url: str, destination: Path) -> None:
                 pass
 
 
-def _ensure_face_weights() -> str:
-    """Возвращает путь до весов face-модели, скачивая их при необходимости."""
+def _ensure_face_weights(*, allow_missing: bool = False) -> Optional[str]:
+    """Возвращает путь до весов face-модели, скачивая их при необходимости.
+
+    Если веса не удалось найти и ``allow_missing`` равно ``True``, функция
+    возвращает ``None`` вместо выброса исключения. Это позволяет сервису
+    деградировать без полного отказа потоковой обработки.
+    """
 
     configured = settings.yolo_face_model.strip()
     if not configured:
@@ -176,9 +181,13 @@ def _ensure_face_weights() -> str:
                 url,
             )
 
-    raise FileNotFoundError(
-        "Не удалось получить веса детектора лиц. Задайте корректный путь или URL в настройках",
+    message = (
+        "Не удалось получить веса детектора лиц. Задайте корректный путь или URL в настройках"
     )
+    if allow_missing:
+        logger.warning(message)
+        return None
+    raise FileNotFoundError(message)
 
 
 def resolve_device(preferred: Optional[str] = None, cuda_env: Optional[str] = None) -> str:
@@ -221,22 +230,29 @@ class AIDetector:
 
         det_weights = settings.yolo_det_model
         pose_weights = settings.yolo_pose_model
-        try:
-            face_weights = _ensure_face_weights()
-        except FileNotFoundError as exc:  # pragma: no cover - зависит от окружения
-            raise RuntimeError(str(exc)) from exc
+        face_weights = _ensure_face_weights(allow_missing=True)
         self.device_preference = settings.yolo_device
         self.device = resolve_device(self.device_preference, settings.cuda_visible_devices)
 
         self.det = YOLO(det_weights)
         self.pose = YOLO(pose_weights)
-        self.face_det = YOLO(face_weights)
+        self.face_det: Optional[YOLO] = None
+        if face_weights:
+            try:
+                self.face_det = YOLO(face_weights)
+            except Exception:
+                logger.exception(
+                    "Не удалось инициализировать детектор лиц YOLO по весам %s",
+                    face_weights,
+                )
+        self._face_warning_shown = False
         self.device_error: Optional[str] = None
         self.actual_device: Optional[str] = None
         try:
             self.det.to(self.device)
             self.pose.to(self.device)
-            self.face_det.to(self.device)
+            if self.face_det is not None:
+                self.face_det.to(self.device)
         except Exception as exc:
             self.device_error = str(exc).strip() or None
         finally:
@@ -542,7 +558,7 @@ class AIDetector:
             det_res = self.det(frame, **det_kwargs)[0]
 
         face_detections: List[Dict[str, Any]] = []
-        if detect_person:
+        if detect_person and self.face_det is not None:
             face_kwargs = {"imgsz": self.det_imgsz, "conf": self.face_conf}
             if self.predict_device:
                 face_kwargs["device"] = self.predict_device
@@ -560,6 +576,12 @@ class AIDetector:
                         xyxy = np.asarray(b.xyxy[0])
                     conf = float(b.conf[0]) if getattr(b, "conf", None) is not None else 0.0
                     face_detections.append({"bbox": xyxy, "conf": conf, "used": False})
+        elif detect_person and self.face_det is None:
+            if not getattr(self, "_face_warning_shown", False):
+                logger.warning(
+                    "Детектор лиц не активирован: веса не найдены. Поток продолжает работу без поиска лиц."
+                )
+                self._face_warning_shown = True
 
         if self.phone_idx is None and det_res is not None and detect_person:
             names = getattr(self.det.model, "names", None) or getattr(self.det, "names", {})
