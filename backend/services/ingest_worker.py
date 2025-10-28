@@ -105,6 +105,10 @@ class IngestWorker(Thread):
 
         self.phone_score_threshold = self.detector.phone_score_threshold
         self.phone_active_until: Optional[datetime] = None
+        self.phone_active_since: Optional[datetime] = None
+        self.phone_active: bool = False
+        self.phone_max_confidence: float = 0.0
+        self.phone_snapshot: Optional[bytes] = None
 
         self.status_interval = settings.ingest_status_interval
         self.status_stale_seconds = settings.ingest_status_stale_threshold
@@ -547,10 +551,56 @@ class IngestWorker(Thread):
 
                 activity_updates = self.activity_detector.update(people, now=now)
                 events_to_store = []
-                ev_type = None
-                if self.detect_person and phone_usage:
-                    self.phone_active_until = now + timedelta(seconds=5)
-                    ev_type = "PHONE_USAGE"
+
+                phone_detected = False
+                if self.detect_person:
+                    if phone_usage:
+                        self.phone_active_until = now + timedelta(seconds=5)
+                    if (
+                        self.phone_active_until is not None
+                        and now <= self.phone_active_until
+                    ):
+                        phone_detected = True
+                    else:
+                        self.phone_active_until = None
+
+                if phone_detected:
+                    if not self.phone_active:
+                        self.phone_active = True
+                        self.phone_active_since = now
+                        self.phone_max_confidence = float(conf)
+                        self.phone_snapshot = snapshot_img
+                    else:
+                        self.phone_max_confidence = max(
+                            self.phone_max_confidence, float(conf)
+                        )
+                        if self.phone_snapshot is None and snapshot_img is not None:
+                            self.phone_snapshot = snapshot_img
+                else:
+                    if self.phone_active and self.phone_active_since is not None:
+                        duration = (now - self.phone_active_since).total_seconds()
+                        duration = max(duration, 0.0)
+                        phone_meta = {
+                            "duration_sec": duration,
+                        }
+                        events_to_store.append(
+                            {
+                                "ts": self.phone_active_since,
+                                "end_ts": now,
+                                "type": "PHONE_USAGE",
+                                "confidence": float(
+                                    self.phone_max_confidence or float(conf)
+                                ),
+                                "snapshot": self.phone_snapshot or snapshot_img,
+                                "meta": phone_meta,
+                                "kind": "phone",
+                            }
+                        )
+                    self.phone_active = False
+                    self.phone_active_since = None
+                    self.phone_active_until = None
+                    self.phone_max_confidence = 0.0
+                    self.phone_snapshot = None
 
                 if self.visualize and vis is not None:
                     try:
@@ -560,23 +610,17 @@ class IngestWorker(Thread):
                     except Exception:
                         logger.exception("[%s] Не удалось сформировать визуализацию кадра", self.name)
 
-                if ev_type:
-                    events_to_store.append(
-                        {
-                            "ts": now,
-                            "type": ev_type,
-                            "confidence": float(conf),
-                            "snapshot": snapshot_img,
-                            "meta": {},
-                            "kind": "phone",
-                        }
-                    )
-
                 for activity in activity_updates:
                     if not activity.get("changed"):
                         continue
 
                     activity_id = activity.get("id")
+                    prev_state = activity.get("previous_state")
+                    prev_state_start = activity.get("previous_state_started_at")
+                    prev_duration = _normalize_meta_number(activity.get("duration_sec"))
+                    new_state = activity.get("state")
+                    state_started_at = activity.get("state_started_at")
+
                     meta = {
                         "person_id": str(activity_id) if activity_id is not None else None,
                         "pose_confidence": _normalize_meta_number(activity.get("confidence")),
@@ -586,7 +630,16 @@ class IngestWorker(Thread):
                         "movement_score": _normalize_meta_number(activity.get("movement_score")),
                         "duration_idle_sec": _normalize_meta_number(activity.get("idle_seconds")),
                         "duration_away_sec": _normalize_meta_number(activity.get("away_seconds")),
+                        "state": prev_state or new_state,
+                        "next_state": new_state,
                     }
+                    if isinstance(prev_state_start, datetime):
+                        meta["state_started_at"] = prev_state_start.isoformat()
+                    if isinstance(state_started_at, datetime):
+                        meta["next_state_started_at"] = state_started_at.isoformat()
+                    if prev_duration is not None:
+                        meta["duration_sec"] = prev_duration
+                        meta["state_finished_at"] = now.isoformat()
                     person_key = str(activity_id) if activity_id is not None else None
                     employee_meta = employee_by_person.get(person_key) if person_key is not None else None
                     if employee_meta:
@@ -600,16 +653,23 @@ class IngestWorker(Thread):
                             meta["faceDistance"] = distance_val
                     meta = {key: value for key, value in meta.items() if value is not None}
 
-                    events_to_store.append(
-                        {
-                            "ts": now,
-                            "type": activity["state"],
-                            "confidence": float(activity.get("confidence", 0.0)),
-                            "snapshot": snapshot_img,
-                            "meta": meta,
-                            "kind": "activity",
-                        }
+                    prev_state_name = prev_state or new_state
+                    event_start = prev_state_start if isinstance(prev_state_start, datetime) else None
+                    should_store = prev_state_name in {"NOT_WORKING", "AWAY"} and (
+                        event_start is not None and prev_duration is not None
                     )
+                    if should_store:
+                        events_to_store.append(
+                            {
+                                "ts": event_start,
+                                "end_ts": now,
+                                "type": prev_state_name,
+                                "confidence": float(activity.get("confidence", 0.0)),
+                                "snapshot": snapshot_img,
+                                "meta": meta,
+                                "kind": "activity",
+                            }
+                        )
 
                 if recognized_employees:
                     current_monotonic = time.monotonic()
@@ -668,6 +728,7 @@ class IngestWorker(Thread):
                         for payload in events_to_store:
                             snapshot_img = payload.get("snapshot")
                             ts = payload["ts"]
+                            end_ts = payload.get("end_ts")
                             meta = dict(payload.get("meta") or {})
                             snap_url = save_snapshot(
                                 snapshot_img,
@@ -679,6 +740,7 @@ class IngestWorker(Thread):
                                 camera_id=self.cam_id,
                                 type=payload["type"],
                                 start_ts=ts,
+                                end_ts=end_ts,
                                 confidence=payload["confidence"],
                                 snapshot_url=snap_url,
                                 meta=meta,
@@ -711,6 +773,7 @@ class IngestWorker(Thread):
                                 "camera": self.name,
                                 "type": payload["type"],
                                 "start_ts": event.start_ts,
+                                "end_ts": event.end_ts,
                                 "confidence": payload["confidence"],
                                 "snapshot_url": snap_url,
                                 "meta": meta,
@@ -735,6 +798,9 @@ class IngestWorker(Thread):
                                     "camera": stored["camera"],
                                     "type": stored["type"],
                                     "start_ts": stored["start_ts"].isoformat(),
+                                    "end_ts": stored["end_ts"].isoformat()
+                                    if stored.get("end_ts")
+                                    else None,
                                     "confidence": stored["confidence"],
                                     "snapshot_url": stored["snapshot_url"],
                                     "meta": stored["meta"],
