@@ -26,6 +26,7 @@ class ActivityDetector:
         self.last_movement_at: Dict[str, datetime] = {}
         self.last_seen_at: Dict[str, datetime] = {}
         self.states: Dict[str, str] = {}
+        self.state_started_at: Dict[str, datetime] = {}
 
     @staticmethod
     def _ensure_utc(ts: Optional[datetime]) -> datetime:
@@ -73,6 +74,40 @@ class ActivityDetector:
             scale = 1.0
         movement_score = (head_movement + hand_movement) / scale
         return head_movement, hand_movement, movement_score
+
+    def _register_state(
+        self,
+        person_id: str,
+        new_state: str,
+        now: datetime,
+        *,
+        start_override: Optional[datetime] = None,
+    ) -> tuple[bool, Optional[str], Optional[datetime], Optional[float], datetime]:
+        """Фиксирует смену состояния и возвращает данные о предыдущем."""
+
+        prev_state = self.states.get(person_id)
+        prev_start = self.state_started_at.get(person_id)
+
+        if prev_state is None:
+            changed = False
+        else:
+            changed = new_state != prev_state
+
+        duration = None
+        if changed and prev_start is not None:
+            duration = (now - prev_start).total_seconds()
+
+        if prev_state is None:
+            state_start = start_override or now
+        elif changed:
+            state_start = start_override or now
+        else:
+            state_start = prev_start or start_override or now
+
+        self.states[person_id] = new_state
+        self.state_started_at[person_id] = state_start
+
+        return changed, prev_state, prev_start, duration, state_start
 
     def update(
         self,
@@ -122,8 +157,16 @@ class ActivityDetector:
 
             head_angle = self._head_angle(keypoints)
 
-            changed = new_state != prev_state
-            self.states[person_id] = new_state
+            start_override = None
+            if new_state == "NOT_WORKING":
+                start_override = self.last_movement_at.get(person_id)
+
+            changed, prev_state, prev_start, prev_duration, state_start = self._register_state(
+                person_id,
+                new_state,
+                now_utc,
+                start_override=start_override,
+            )
 
             updates.append(
                 {
@@ -137,6 +180,10 @@ class ActivityDetector:
                     "away_seconds": away_seconds,
                     "confidence": confidence,
                     "changed": changed,
+                    "state_started_at": state_start,
+                    "previous_state": prev_state,
+                    "previous_state_started_at": prev_start,
+                    "duration_sec": prev_duration,
                 }
             )
 
@@ -150,9 +197,16 @@ class ActivityDetector:
             if away_seconds >= self.away_threshold:
                 new_state = "AWAY"
 
-            changed = new_state != prev_state
-            if changed:
-                self.states[person_id] = new_state
+            start_override = None
+            if new_state == "AWAY":
+                start_override = last_seen
+
+            changed, prev_state, prev_start, prev_duration, state_start = self._register_state(
+                person_id,
+                new_state,
+                now_utc,
+                start_override=start_override,
+            )
 
             updates.append(
                 {
@@ -166,6 +220,10 @@ class ActivityDetector:
                     "away_seconds": away_seconds,
                     "confidence": 0.0,
                     "changed": changed,
+                    "state_started_at": state_start,
+                    "previous_state": prev_state,
+                    "previous_state_started_at": prev_start,
+                    "duration_sec": prev_duration,
                 }
             )
 
