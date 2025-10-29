@@ -24,6 +24,7 @@ class EmployeeCreateRequest(BaseModel):
     """Запрос на создание карточки сотрудника."""
 
     name: constr(strip_whitespace=True, min_length=1)  # type: ignore[valid-type]
+    account_id: constr(strip_whitespace=True, min_length=1) | None = None  # type: ignore[valid-type]
 
 
 class FaceSampleAssignRequest(BaseModel):
@@ -46,6 +47,7 @@ def _serialize_employee(employee: Employee, sample_count: int) -> dict:
     return {
         "id": employee.id,
         "name": employee.name,
+        "accountId": employee.account_id,
         "sampleCount": sample_count,
         "createdAt": employee.created_at,
         "updatedAt": employee.updated_at,
@@ -67,7 +69,11 @@ def _serialize_face_sample(
         "camera": camera_name,
         "eventId": sample.event_id,
         "employee": (
-            {"id": employee.id, "name": employee.name}
+            {
+                "id": employee.id,
+                "name": employee.name,
+                "accountId": employee.account_id,
+            }
             if employee is not None
             else None
         ),
@@ -100,6 +106,7 @@ def create_employee(
     payload: EmployeeCreateRequest, session: Session = Depends(get_session)
 ) -> dict:
     name = payload.name.strip()
+    account_id = payload.account_id.strip() if payload.account_id else None
     exists = (
         session.query(Employee)
         .filter(func.lower(Employee.name) == func.lower(name))
@@ -111,7 +118,22 @@ def create_employee(
             detail="Сотрудник с таким именем уже существует",
         )
 
-    employee = Employee(name=name)
+    if account_id:
+        existing_account = (
+            session.query(Employee)
+            .filter(
+                Employee.account_id.isnot(None),
+                func.lower(Employee.account_id) == func.lower(account_id),
+            )
+            .first()
+        )
+        if existing_account is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Сотрудник с таким аккаунтом уже существует",
+            )
+
+    employee = Employee(name=name, account_id=account_id)
     session.add(employee)
     session.commit()
     session.refresh(employee)
