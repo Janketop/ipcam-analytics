@@ -125,9 +125,14 @@ def prepare_widerface_dataset(root: Path, *, download: bool) -> PreparedDataset:
             archive = root / "WIDER_val.zip"
             _download(WIDERFACE_VAL_URL, archive)
             _extract_archive(archive, root)
+        archive = root / "wider_face_split.zip"
         if not split_dir.exists():
-            archive = root / "wider_face_split.zip"
             _download(WIDERFACE_SPLIT_URL, archive)
+            _extract_archive(archive, split_dir)
+        elif not any(split_dir.rglob("wider_face_*_bbx_gt.txt")):
+            # Каталог уже существует, но файлы могли быть удалены вручную.
+            if not archive.is_file():
+                _download(WIDERFACE_SPLIT_URL, archive)
             _extract_archive(archive, split_dir)
 
     train_images_dir = images_dir / "images"
@@ -142,10 +147,52 @@ def prepare_widerface_dataset(root: Path, *, download: bool) -> PreparedDataset:
     labels_train.mkdir(parents=True, exist_ok=True)
     labels_val.mkdir(parents=True, exist_ok=True)
 
-    annotations_train = split_dir / "wider_face_train_bbx_gt.txt"
-    annotations_val = split_dir / "wider_face_val_bbx_gt.txt"
-    if not annotations_train.is_file() or not annotations_val.is_file():
+    def _locate_annotation(filename: str) -> Path | None:
+        """Ищет файл аннотации как в корне ``splits``, так и во вложенных каталогах."""
+
+        direct_candidate = split_dir / filename
+        if direct_candidate.is_file():
+            return direct_candidate
+
+        for nested_path in split_dir.rglob(filename):
+            if nested_path.is_file():
+                return nested_path
+        return None
+
+    annotations_train = _locate_annotation("wider_face_train_bbx_gt.txt")
+    annotations_val = _locate_annotation("wider_face_val_bbx_gt.txt")
+
+    if annotations_train is None or annotations_val is None:
+        archive = root / "wider_face_split.zip"
+        if archive.is_file():
+            LOGGER.info(
+                "Повторное извлечение файлов аннотаций из %s", archive,
+            )
+            with zipfile.ZipFile(archive, "r") as zip_file:
+                for member in zip_file.namelist():
+                    if member.endswith("wider_face_train_bbx_gt.txt") or member.endswith(
+                        "wider_face_val_bbx_gt.txt"
+                    ):
+                        zip_file.extract(member, split_dir)
+            annotations_train = _locate_annotation("wider_face_train_bbx_gt.txt")
+            annotations_val = _locate_annotation("wider_face_val_bbx_gt.txt")
+
+    if annotations_train is None or annotations_val is None:
         raise FileNotFoundError("Файлы аннотаций wider_face_*_bbx_gt.txt не найдены")
+
+    def _ensure_in_split_dir(path: Path) -> Path:
+        """Возвращает путь к файлу в ``split_dir``, копируя его при необходимости."""
+
+        if path.parent == split_dir:
+            return path
+
+        target = split_dir / path.name
+        if not target.exists():
+            shutil.copy2(path, target)
+        return target
+
+    annotations_train = _ensure_in_split_dir(annotations_train)
+    annotations_val = _ensure_in_split_dir(annotations_val)
 
     LOGGER.info("Конвертация train-разметки в формат YOLO")
     _convert_annotations(
