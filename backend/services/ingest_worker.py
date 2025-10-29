@@ -84,11 +84,17 @@ class IngestWorker(Thread):
             capture_entry_time=capture_entry_time,
             zones=self._zone_polygons,
         )
+        self.enable_phone_detection = settings.enable_phone_detection
+        self.enable_activity_detection = settings.enable_activity_detection
         self.employee_recognizer = self._init_employee_recognizer()
         self.detector.set_employee_recognizer(self.employee_recognizer)
         self.employee_presence_cooldown = float(settings.face_recognition_presence_cooldown)
         self._employee_presence_last: dict[int, float] = {}
-        self.activity_detector = ActivityDetector(idle_threshold=self.idle_alert_time)
+        self.activity_detector = (
+            ActivityDetector(idle_threshold=self.idle_alert_time)
+            if self.enable_activity_detection
+            else None
+        )
         self.score_buffer: deque[float] = deque(maxlen=self.detector.score_smoothing)
         self.last_visual_jpeg: Optional[bytes] = None
 
@@ -139,7 +145,8 @@ class IngestWorker(Thread):
 
         if idle_alert_time is not None:
             self.idle_alert_time = float(idle_alert_time)
-            self.activity_detector.idle_threshold = float(self.idle_alert_time)
+            if self.activity_detector is not None:
+                self.activity_detector.idle_threshold = float(self.idle_alert_time)
 
         self.detector.update_flags(
             detect_person=self.detect_person,
@@ -791,7 +798,7 @@ class IngestWorker(Thread):
                 self._last_frame_monotonic = frame_processed_monotonic
                 self.last_frame_at = datetime.now(timezone.utc)
 
-                if self.detect_person:
+                if self.detect_person and self.enable_phone_detection:
                     self.score_buffer.append(conf_raw)
                     smoothed_conf = max(self.score_buffer) if self.score_buffer else conf_raw
                     phone_usage = phone_usage_raw or smoothed_conf >= self.phone_score_threshold
@@ -837,11 +844,14 @@ class IngestWorker(Thread):
                             "distance": distance_val,
                         }
 
-                activity_updates = self.activity_detector.update(people, now=now)
+                if self.activity_detector is not None:
+                    activity_updates = self.activity_detector.update(people, now=now)
+                else:
+                    activity_updates = []
                 events_to_store = []
 
-                phone_detected = False
-                if self.detect_person:
+                if self.detect_person and self.enable_phone_detection:
+                    phone_detected = False
                     if phone_usage:
                         self.phone_active_until = now + timedelta(seconds=5)
                     if (
@@ -852,41 +862,47 @@ class IngestWorker(Thread):
                     else:
                         self.phone_active_until = None
 
-                if phone_detected:
-                    if not self.phone_active:
-                        self.phone_active = True
-                        self.phone_active_since = now
-                        self.phone_max_confidence = float(conf)
-                        self.phone_snapshot = snapshot_img
-                    else:
-                        self.phone_max_confidence = max(
-                            self.phone_max_confidence, float(conf)
-                        )
-                        if self.phone_snapshot is None and snapshot_img is not None:
+                    if phone_detected:
+                        if not self.phone_active:
+                            self.phone_active = True
+                            self.phone_active_since = now
+                            self.phone_max_confidence = float(conf)
                             self.phone_snapshot = snapshot_img
-                else:
-                    if self.phone_active and self.phone_active_since is not None:
-                        duration = (now - self.phone_active_since).total_seconds()
-                        duration = max(duration, 0.0)
-                        phone_meta = {
-                            "duration_sec": duration,
-                        }
-                        events_to_store.append(
-                            {
-                                "ts": self.phone_active_since,
-                                "end_ts": now,
-                                "type": "PHONE_USAGE",
-                                "confidence": float(
-                                    self.phone_max_confidence or float(conf)
-                                ),
-                                "snapshot":
-                                    self.phone_snapshot
-                                    if self.phone_snapshot is not None
-                                    else snapshot_img,
-                                "meta": phone_meta,
-                                "kind": "phone",
+                        else:
+                            self.phone_max_confidence = max(
+                                self.phone_max_confidence, float(conf)
+                            )
+                            if self.phone_snapshot is None and snapshot_img is not None:
+                                self.phone_snapshot = snapshot_img
+                    else:
+                        if self.phone_active and self.phone_active_since is not None:
+                            duration = (now - self.phone_active_since).total_seconds()
+                            duration = max(duration, 0.0)
+                            phone_meta = {
+                                "duration_sec": duration,
                             }
-                        )
+                            events_to_store.append(
+                                {
+                                    "ts": self.phone_active_since,
+                                    "end_ts": now,
+                                    "type": "PHONE_USAGE",
+                                    "confidence": float(
+                                        self.phone_max_confidence or float(conf)
+                                    ),
+                                    "snapshot":
+                                        self.phone_snapshot
+                                        if self.phone_snapshot is not None
+                                        else snapshot_img,
+                                    "meta": phone_meta,
+                                    "kind": "phone",
+                                }
+                            )
+                        self.phone_active = False
+                        self.phone_active_since = None
+                        self.phone_active_until = None
+                        self.phone_max_confidence = 0.0
+                        self.phone_snapshot = None
+                else:
                     self.phone_active = False
                     self.phone_active_since = None
                     self.phone_active_until = None

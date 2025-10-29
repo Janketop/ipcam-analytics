@@ -65,6 +65,8 @@ class Settings(BaseSettings):
 
     face_blur: bool = Field(False)
     visualize: bool = Field(False)
+    enable_phone_detection: bool = Field(False)
+    enable_activity_detection: bool = Field(False)
 
     face_recognition_threshold: float = Field(0.6, ge=0.0)
     face_recognition_model: str = Field("facenet_vggface2")
