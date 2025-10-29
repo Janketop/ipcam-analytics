@@ -24,6 +24,7 @@ export type EventItem = {
 export type Employee = {
   id: number;
   name: string;
+  accountId?: string | null;
   sampleCount: number;
   createdAt: string;
   updatedAt: string;
@@ -40,7 +41,7 @@ export type FaceSample = {
   candidateKey?: string | null;
   camera?: string | null;
   eventId?: number | null;
-  employee?: { id: number; name: string } | null;
+  employee?: { id: number; name: string; accountId?: string | null } | null;
 };
 
 export type Stat = {

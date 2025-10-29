@@ -19,6 +19,7 @@ const IdentificationPage = () => {
   const [pendingSampleId, setPendingSampleId] = useState<number | null>(null);
   const [selectedEmployee, setSelectedEmployee] = useState<Record<number, number | ''>>({});
   const [newEmployeeName, setNewEmployeeName] = useState<Record<number, string>>({});
+  const [newEmployeeAccountId, setNewEmployeeAccountId] = useState<Record<number, string>>({});
 
   const fetchEmployees = useCallback(async () => {
     const response = await fetch(`${normalizedApiBase}/employees`);
@@ -52,6 +53,13 @@ const IdentificationPage = () => {
       }
       return next;
     });
+    setNewEmployeeAccountId(prev => {
+      const next: Record<number, string> = {};
+      for (const sample of items) {
+        next[sample.id] = prev[sample.id] ?? '';
+      }
+      return next;
+    });
   }, [normalizedApiBase]);
 
   const refreshAll = useCallback(async () => {
@@ -72,11 +80,16 @@ const IdentificationPage = () => {
   }, [refreshAll]);
 
   const employeeOptions = useMemo(() => {
-    return employees.map(employee => (
-      <option key={employee.id} value={employee.id}>
-        {employee.name}
-      </option>
-    ));
+    return employees.map(employee => {
+      const label = employee.accountId
+        ? `${employee.name} · ${employee.accountId}`
+        : employee.name;
+      return (
+        <option key={employee.id} value={employee.id}>
+          {label}
+        </option>
+      );
+    });
   }, [employees]);
 
   const assignSample = useCallback(
@@ -114,6 +127,8 @@ const IdentificationPage = () => {
     async (sampleId: number) => {
       const rawName = newEmployeeName[sampleId] ?? '';
       const name = rawName.trim();
+      const rawAccountId = newEmployeeAccountId[sampleId] ?? '';
+      const accountId = rawAccountId.trim();
       if (!name) {
         setError('Введите имя для нового сотрудника.');
         return;
@@ -121,10 +136,14 @@ const IdentificationPage = () => {
       setPendingSampleId(sampleId);
       setError(null);
       try {
+        const requestPayload: Record<string, unknown> = { name };
+        if (accountId) {
+          requestPayload.account_id = accountId;
+        }
         const createResponse = await fetch(`${normalizedApiBase}/employees`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name }),
+          body: JSON.stringify(requestPayload),
         });
         if (!createResponse.ok) {
           const payload = await createResponse.json().catch(() => ({}));
@@ -138,6 +157,7 @@ const IdentificationPage = () => {
         }
         setSelectedEmployee(prev => ({ ...prev, [sampleId]: employee.id }));
         setNewEmployeeName(prev => ({ ...prev, [sampleId]: '' }));
+        setNewEmployeeAccountId(prev => ({ ...prev, [sampleId]: '' }));
         const assignResponse = await fetch(`${normalizedApiBase}/face-samples/${sampleId}/assign`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -156,7 +176,13 @@ const IdentificationPage = () => {
         setPendingSampleId(null);
       }
     },
-    [fetchEmployees, fetchSamples, newEmployeeName, normalizedApiBase]
+    [
+      fetchEmployees,
+      fetchSamples,
+      newEmployeeAccountId,
+      newEmployeeName,
+      normalizedApiBase,
+    ]
   );
 
   const markAsClient = useCallback(
@@ -249,7 +275,12 @@ const IdentificationPage = () => {
                     background: '#f8fafc',
                   }}
                 >
-                  <span style={{ fontWeight: 600 }}>{employee.name}</span>
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    <span style={{ fontWeight: 600 }}>{employee.name}</span>
+                    <span style={{ color: '#475569', fontSize: 14 }}>
+                      Аккаунт: {employee.accountId?.trim() ? employee.accountId : 'не указан'}
+                    </span>
+                  </div>
                   <span style={{ color: '#475569', fontSize: 14 }}>
                     {employee.sampleCount} снимков
                   </span>
@@ -378,6 +409,23 @@ const IdentificationPage = () => {
                             setNewEmployeeName(prev => ({ ...prev, [sample.id]: value }));
                           }}
                           placeholder="Имя сотрудника"
+                          disabled={disabled}
+                          style={{
+                            padding: '8px 12px',
+                            borderRadius: 8,
+                            border: '1px solid #cbd5f5',
+                            fontSize: 14,
+                          }}
+                        />
+                        <label style={{ fontSize: 14, color: '#0f172a' }}>Аккаунт (опционально)</label>
+                        <input
+                          type="text"
+                          value={newEmployeeAccountId[sample.id] ?? ''}
+                          onChange={event => {
+                            const value = event.target.value;
+                            setNewEmployeeAccountId(prev => ({ ...prev, [sample.id]: value }));
+                          }}
+                          placeholder="Идентификатор аккаунта (опционально)"
                           disabled={disabled}
                           style={{
                             padding: '8px 12px',
