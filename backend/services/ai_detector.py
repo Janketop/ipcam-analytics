@@ -157,6 +157,13 @@ def _ensure_face_weights(*, allow_missing: bool = False) -> Optional[str]:
         except OSError:
             continue
 
+    message = (
+        "Не удалось получить веса детектора лиц. Задайте корректный путь или URL в настройках"
+    )
+    if allow_missing:
+        logger.warning("%s; загрузка пропущена из-за allow_missing", message)
+        return None
+
     manual_url = (settings.yolo_face_model_url or "").strip()
     tried_urls = _candidate_face_weight_urls(manual_url)
 
@@ -186,12 +193,6 @@ def _ensure_face_weights(*, allow_missing: bool = False) -> Optional[str]:
                 url,
             )
 
-    message = (
-        "Не удалось получить веса детектора лиц. Задайте корректный путь или URL в настройках"
-    )
-    if allow_missing:
-        logger.warning(message)
-        return None
     raise FileNotFoundError(message)
 
 
