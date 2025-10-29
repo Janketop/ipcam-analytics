@@ -267,20 +267,25 @@ def train(detector_weights: Path, *,
           device: str | None,
           project: Path,
           name: str,
-          output_weights: Path) -> Path:
+          output_weights: Path,
+          workers: int = 0) -> Path:
     model = YOLO(str(detector_weights))
     project = project.resolve()
     project.mkdir(parents=True, exist_ok=True)
 
     LOGGER.info(
-        "Запуск обучения: base=%s, data=%s, epochs=%d, batch=%d, imgsz=%d, device=%s",
+        "Запуск обучения: base=%s, data=%s, epochs=%d, batch=%d, imgsz=%d, device=%s, workers=%d",
         detector_weights,
         dataset.yaml_path,
         epochs,
         batch,
         imgsz,
         device or "auto",
+        workers,
     )
+
+    if workers < 0:
+        raise ValueError("Количество workers не может быть отрицательным")
 
     train_kwargs = dict(
         data=str(dataset.yaml_path),
@@ -290,6 +295,7 @@ def train(detector_weights: Path, *,
         project=str(project),
         name=name,
         exist_ok=True,
+        workers=workers,
     )
     if device:
         train_kwargs["device"] = device
@@ -347,6 +353,12 @@ def parse_args() -> argparse.Namespace:
         help="Устройство (например, cuda:0). По умолчанию Ultralytics выбирает автоматически",
     )
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=0,
+        help="Количество воркеров DataLoader. 0 отключает multiprocessing (по умолчанию)",
+    )
+    parser.add_argument(
         "--weights-output",
         type=Path,
         default=DEFAULT_OUTPUT_WEIGHTS,
@@ -384,6 +396,7 @@ def main() -> None:
         batch=args.batch,
         imgsz=args.imgsz,
         device=args.device,
+        workers=args.workers,
         project=args.project,
         name=args.run_name,
         output_weights=args.weights_output,
