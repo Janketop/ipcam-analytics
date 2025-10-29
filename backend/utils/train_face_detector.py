@@ -1,4 +1,4 @@
-"""Обучение детектора лиц на основе YOLO11n и датасета WIDERFace.
+"""Обучение детектора лиц на основе YOLOv11m и датасета WIDERFace.
 
 Скрипт автоматизирует скачивание/подготовку датасета, конвертацию в
 формат YOLO, запуск обучения и копирование лучших весов в каталог
@@ -15,8 +15,8 @@ python -m backend.utils.train_face_detector \
 ```
 
 После завершения лучшие веса будут сохранены в
-`backend/weights/yolo11n-face.pt`, а логи обучения — в каталоге
-`runs/face/yolo11n-widerface`.
+`backend/weights/yolov11m-face.pt`, а логи обучения — в каталоге
+`runs/face/yolov11m-widerface`.
 """
 from __future__ import annotations
 
@@ -40,9 +40,9 @@ WIDERFACE_TRAIN_URL = "https://huggingface.co/datasets/wider_face/resolve/main/d
 WIDERFACE_VAL_URL = "https://huggingface.co/datasets/wider_face/resolve/main/data/WIDER_val.zip"
 WIDERFACE_SPLIT_URL = "https://huggingface.co/datasets/wider_face/resolve/main/data/wider_face_split.zip"
 
-DEFAULT_OUTPUT_WEIGHTS = Path("backend/weights/yolo11n-face.pt")
+DEFAULT_OUTPUT_WEIGHTS = Path("backend/weights/yolov11m-face.pt")
 DEFAULT_PROJECT_DIR = Path("runs/face")
-DEFAULT_RUN_NAME = "yolo11n-widerface"
+DEFAULT_RUN_NAME = "yolov11m-widerface"
 
 
 def _download(url: str, destination: Path) -> None:
