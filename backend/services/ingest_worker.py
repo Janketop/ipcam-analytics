@@ -96,7 +96,9 @@ class IngestWorker(Thread):
         self.last_frame_at: Optional[datetime] = None
         self.frame_durations: deque[float] = deque(maxlen=120)
         self._last_frame_monotonic: Optional[float] = None
-        self.snapshot_candidates: deque[tuple[object, float]] = deque(
+        self._next_allowed_process_monotonic: Optional[float] = None
+        self._last_snapshot_capture_monotonic: Optional[float] = None
+        self.snapshot_candidates: deque[dict[str, Any]] = deque(
             maxlen=settings.snapshot_focus_buffer_size
         )
 
@@ -274,17 +276,62 @@ class IngestWorker(Thread):
             logger.debug("[%s] Не удалось оценить резкость кадра", self.name, exc_info=True)
             return 0.0
 
-    def _push_snapshot_candidate(self, frame) -> None:
+    def _push_snapshot_candidate(
+        self, frame, captured_monotonic: Optional[float] = None
+    ) -> None:
         if frame is None:
             return
+        if captured_monotonic is None:
+            captured_monotonic = time.monotonic()
         sharpness = self._measure_sharpness(frame)
-        self.snapshot_candidates.append((frame.copy(), sharpness))
+        self.snapshot_candidates.append(
+            {
+                "frame": frame.copy(),
+                "sharpness": sharpness,
+                "captured_at": float(captured_monotonic),
+            }
+        )
 
-    def _select_best_snapshot_candidate(self):
+    def _select_best_snapshot_candidate(
+        self, since_monotonic: Optional[float] = None
+    ) -> tuple[Optional[np.ndarray], Optional[float]]:
         if not self.snapshot_candidates:
-            return None
-        best_frame, _ = max(self.snapshot_candidates, key=lambda item: item[1])
-        return best_frame
+            return None, None
+
+        best_candidate: Optional[dict[str, Any]] = None
+        best_sharpness = -math.inf
+        for candidate in self.snapshot_candidates:
+            captured_at = candidate.get("captured_at")
+            if since_monotonic is not None and isinstance(captured_at, (int, float)):
+                if float(captured_at) <= since_monotonic:
+                    continue
+
+            sharpness = float(candidate.get("sharpness", 0.0))
+            if best_candidate is None or sharpness > best_sharpness:
+                best_candidate = candidate
+                best_sharpness = sharpness
+
+        if not best_candidate:
+            return None, None
+
+        frame = best_candidate.get("frame")
+        captured_at = best_candidate.get("captured_at")
+        captured_monotonic = float(captured_at) if isinstance(captured_at, (int, float)) else None
+        return frame, captured_monotonic
+
+    def _prune_snapshot_candidates(self, before_or_equal: Optional[float]) -> None:
+        if before_or_equal is None:
+            return
+
+        while self.snapshot_candidates:
+            first = self.snapshot_candidates[0]
+            captured_at = first.get("captured_at")
+            if not isinstance(captured_at, (int, float)):
+                break
+            if float(captured_at) <= before_or_equal:
+                self.snapshot_candidates.popleft()
+            else:
+                break
 
     def _determine_status(self, now: datetime, runtime: dict) -> str:
         if self.stop_flag:
@@ -383,17 +430,23 @@ class IngestWorker(Thread):
     def run(self) -> None:  # noqa: C901
         reconnect_delay = settings.rtsp_reconnect_delay
         max_failed_reads = settings.rtsp_max_failed_reads
-        fps_skip = settings.ingest_fps_skip
+        target_fps = float(settings.ingest_target_fps)
+        target_interval = 1.0 / target_fps if target_fps > 0 else 0.0
         flush_timeout = settings.ingest_flush_timeout
 
         self.worker_started_at = datetime.now(timezone.utc)
         self._last_frame_monotonic = None
+        self._next_allowed_process_monotonic = None
+        self._last_snapshot_capture_monotonic = None
         self.frame_durations.clear()
         logger.info("[%s] Ingest-воркер запущен", self.name)
         self._broadcast_status(force=True)
         while not self.stop_flag:
             self._broadcast_status()
             cap = cv2.VideoCapture(self.url)
+            self._next_allowed_process_monotonic = None
+            self._last_snapshot_capture_monotonic = None
+            self.snapshot_candidates.clear()
             try:
                 if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -416,13 +469,13 @@ class IngestWorker(Thread):
                 continue
 
             logger.info("[%s] Ingest-воркер успешно подключился к потоку", self.name)
-            frame_id = 0
             failed_reads = 0
             reconnect_needed = False
 
             while not self.stop_flag:
                 self._broadcast_status()
                 ok, frame = cap.read()
+                capture_monotonic = time.monotonic()
                 if not ok:
                     failed_reads += 1
                     if failed_reads >= max_failed_reads:
@@ -438,31 +491,37 @@ class IngestWorker(Thread):
                     continue
 
                 failed_reads = 0
-                frame_id += 1
-                if frame_id % fps_skip != 0:
+                self._push_snapshot_candidate(frame, capture_monotonic)
+
+                if (
+                    target_interval > 0
+                    and self._next_allowed_process_monotonic is not None
+                    and capture_monotonic < self._next_allowed_process_monotonic
+                ):
                     continue
 
-                flush_start = time.time()
                 grabbed_any = False
-                while time.time() - flush_start < flush_timeout:
-                    ok_grab = cap.grab()
-                    if not ok_grab:
-                        failed_reads += 1
-                        if failed_reads >= max_failed_reads:
-                            reconnect_needed = True
-                            logger.warning(
-                                "[%s] Потеряно соединение при чтении буфера, повторное подключение через %.1f с",
-                                self.name,
-                                reconnect_delay,
-                            )
-                            self._broadcast_status(force=True)
+                if flush_timeout > 0:
+                    flush_deadline = time.monotonic() + flush_timeout
+                    while time.monotonic() < flush_deadline:
+                        ok_grab = cap.grab()
+                        if not ok_grab:
+                            failed_reads += 1
+                            if failed_reads >= max_failed_reads:
+                                reconnect_needed = True
+                                logger.warning(
+                                    "[%s] Потеряно соединение при чтении буфера, повторное подключение через %.1f с",
+                                    self.name,
+                                    reconnect_delay,
+                                )
+                                self._broadcast_status(force=True)
+                                break
+                            time.sleep(0.2)
                             break
-                        time.sleep(0.2)
+                        grabbed_any = True
+                    if reconnect_needed:
+                        self._broadcast_status(force=True)
                         break
-                    grabbed_any = True
-                if reconnect_needed:
-                    self._broadcast_status(force=True)
-                    break
 
                 if grabbed_any:
                     ok_retrieve, latest_frame = cap.retrieve()
@@ -480,8 +539,18 @@ class IngestWorker(Thread):
                         time.sleep(0.2)
                         continue
                     frame = latest_frame
+                    capture_monotonic = time.monotonic()
+                    self._push_snapshot_candidate(frame, capture_monotonic)
 
-                self._push_snapshot_candidate(frame)
+                best_snapshot_frame, selected_capture_monotonic = self._select_best_snapshot_candidate(
+                    since_monotonic=self._last_snapshot_capture_monotonic
+                )
+                process_capture_monotonic = capture_monotonic
+                if selected_capture_monotonic is not None:
+                    self._last_snapshot_capture_monotonic = selected_capture_monotonic
+                else:
+                    self._last_snapshot_capture_monotonic = process_capture_monotonic
+                self._prune_snapshot_candidates(self._last_snapshot_capture_monotonic)
                 (
                     phone_usage_raw,
                     conf_raw,
@@ -490,7 +559,6 @@ class IngestWorker(Thread):
                     car_events,
                     people,
                 ) = self.detector.process_frame(frame)
-                best_snapshot_frame = self._select_best_snapshot_candidate()
                 if best_snapshot_frame is not None:
                     snapshot_img = prepare_snapshot(
                         best_snapshot_frame,
@@ -499,6 +567,10 @@ class IngestWorker(Thread):
                     )
 
                 frame_processed_monotonic = time.monotonic()
+                if target_interval > 0:
+                    self._next_allowed_process_monotonic = (
+                        process_capture_monotonic + target_interval
+                    )
                 if self._last_frame_monotonic is not None:
                     self.frame_durations.append(frame_processed_monotonic - self._last_frame_monotonic)
                 self._last_frame_monotonic = frame_processed_monotonic
