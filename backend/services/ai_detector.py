@@ -920,10 +920,21 @@ class AIDetector:
             center_y = float((bbox_arr[1] + bbox_arr[3]) * 0.5)
             if not self._is_point_in_zones(center_x, center_y, w_frame, h_frame):
                 continue
+            left_eye_coords: Optional[List[float]] = None
+            right_eye_coords: Optional[List[float]] = None
+            left_eye_conf: Optional[float] = None
+            right_eye_conf: Optional[float] = None
             try:
-                le = kpts[1]
-                re = kpts[2]
-                head_tilt = abs(le[1] - re[1]) / (abs(le[0] - re[0]) + 1e-3)
+                le = np.asarray(kpts[1], dtype=np.float32)
+                re = np.asarray(kpts[2], dtype=np.float32)
+                head_tilt = abs(float(le[1]) - float(re[1])) / (
+                    abs(float(le[0]) - float(re[0])) + 1e-3
+                )
+                left_eye_coords = le.tolist()
+                right_eye_coords = re.tolist()
+                if kconf is not None and len(kconf) > 2:
+                    left_eye_conf = float(kconf[1]) if kconf[1] is not None else None
+                    right_eye_conf = float(kconf[2]) if kconf[2] is not None else None
             except Exception:
                 head_tilt = 0.0
 
@@ -1101,6 +1112,15 @@ class AIDetector:
                     "bbox": bbox_arr[:4].tolist(),
                     "face_bbox": face_bbox_coords,
                     "face_confidence": face_conf_score,
+                    "head_tilt": float(head_tilt),
+                    "eyes": {
+                        "left": left_eye_coords,
+                        "right": right_eye_coords,
+                        "confidences": {
+                            "left": left_eye_conf,
+                            "right": right_eye_conf,
+                        },
+                    },
                     "employee_name": employee_name,
                     "employee": employee_info,
                 }
