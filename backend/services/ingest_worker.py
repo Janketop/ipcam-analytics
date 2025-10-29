@@ -11,6 +11,7 @@ from threading import Thread
 from typing import Any, Awaitable, Callable, Optional, Sequence
 
 import cv2
+import numpy as np
 
 from backend.core.config import settings
 from backend.core.database import SessionFactory
@@ -108,7 +109,7 @@ class IngestWorker(Thread):
         self.phone_active_since: Optional[datetime] = None
         self.phone_active: bool = False
         self.phone_max_confidence: float = 0.0
-        self.phone_snapshot: Optional[bytes] = None
+        self.phone_snapshot: Optional[np.ndarray] = None
 
         self.status_interval = settings.ingest_status_interval
         self.status_stale_seconds = settings.ingest_status_stale_threshold
@@ -591,7 +592,10 @@ class IngestWorker(Thread):
                                 "confidence": float(
                                     self.phone_max_confidence or float(conf)
                                 ),
-                                "snapshot": self.phone_snapshot or snapshot_img,
+                                "snapshot":
+                                    self.phone_snapshot
+                                    if self.phone_snapshot is not None
+                                    else snapshot_img,
                                 "meta": phone_meta,
                                 "kind": "phone",
                             }
