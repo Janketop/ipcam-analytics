@@ -100,6 +100,7 @@ class Settings(BaseSettings):
     face_training_batch: int = Field(32, ge=1)
     face_training_imgsz: int = Field(640, ge=32)
     face_training_device: Optional[str] = Field(None)
+    face_training_workers: int = Field(0, ge=0)
     face_training_project_dir: str = Field("runs/face")
     face_training_run_name: str = Field("yolo11n-widerface")
     face_training_base_weights: str = Field("yolo11n.pt")
