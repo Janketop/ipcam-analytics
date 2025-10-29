@@ -16,6 +16,9 @@ class Employee(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    account_id: Mapped[str | None] = mapped_column(
+        Text, nullable=True, unique=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -26,7 +29,9 @@ class Employee(Base):
     face_samples = relationship("FaceSample", back_populates="employee")
 
     def __repr__(self) -> str:  # pragma: no cover - отладка
-        return f"Employee(id={self.id!r}, name={self.name!r})"
+        return (
+            f"Employee(id={self.id!r}, name={self.name!r}, account_id={self.account_id!r})"
+        )
 
 
 __all__ = ["Employee"]
