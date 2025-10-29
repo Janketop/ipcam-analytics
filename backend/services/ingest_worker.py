@@ -278,46 +278,259 @@ class IngestWorker(Thread):
 
     def _push_snapshot_candidate(
         self, frame, captured_monotonic: Optional[float] = None
-    ) -> None:
+    ) -> Optional[dict[str, Any]]:
         if frame is None:
-            return
+            return None
         if captured_monotonic is None:
             captured_monotonic = time.monotonic()
         sharpness = self._measure_sharpness(frame)
-        self.snapshot_candidates.append(
+        candidate: dict[str, Any] = {
+            "frame": frame.copy(),
+            "sharpness": float(sharpness),
+            "captured_at": float(captured_monotonic),
+            "metrics": {},
+            "score": None,
+        }
+        self.snapshot_candidates.append(candidate)
+        return candidate
+
+    def _score_snapshot_candidate(self, candidate: dict[str, Any]) -> float:
+        metrics = candidate.setdefault("metrics", {})
+        normalized = metrics.get("normalized") or {}
+        if normalized.get("sharpness") is None:
+            sharpness_raw = candidate.get("sharpness")
+            try:
+                sharpness_value = max(float(sharpness_raw or 0.0), 0.0)
+            except (TypeError, ValueError):
+                sharpness_value = 0.0
+            normalized["sharpness"] = 1.0 - math.exp(-sharpness_value / 150.0)
+        weights = {
+            "sharpness": 0.3,
+            "face_area": 0.2,
+            "face_centering": 0.2,
+            "face_brightness": 0.1,
+            "head_straightness": 0.1,
+            "eye_focus": 0.1,
+        }
+
+        available_weights = {
+            key: weight
+            for key, weight in weights.items()
+            if normalized.get(key) is not None
+        }
+        total_weight = sum(available_weights.values())
+        score = 0.0
+        if total_weight > 0:
+            score = sum(
+                normalized.get(key, 0.0) * weight for key, weight in available_weights.items()
+            ) / total_weight
+        elif normalized.get("sharpness") is not None:
+            score = float(normalized.get("sharpness") or 0.0)
+
+        metrics["weights"] = weights
+        metrics["normalized"] = normalized
+        metrics["contributions"] = {
+            key: (normalized.get(key) or 0.0) * weight for key, weight in weights.items()
+        }
+        metrics["total_weight"] = total_weight
+        candidate["score"] = float(score)
+        metrics["score"] = float(score)
+        return float(score)
+
+    def _update_snapshot_candidate_metrics(
+        self,
+        candidate: Optional[dict[str, Any]],
+        frame,
+        people: Sequence[dict[str, Any]],
+    ) -> None:
+        if candidate is None or frame is None:
+            return
+        if frame.size == 0:
+            return
+
+        try:
+            height, width = frame.shape[:2]
+        except Exception:
+            return
+
+        frame_area = float(max(width * height, 1))
+        metrics = candidate.setdefault("metrics", {})
+        raw_metrics = metrics.setdefault("raw", {})
+        normalized_metrics: dict[str, Optional[float]] = {}
+
+        sharpness = float(candidate.get("sharpness", 0.0) or 0.0)
+        normalized_metrics["sharpness"] = 1.0 - math.exp(-max(sharpness, 0.0) / 150.0)
+
+        selected_person = None
+        best_face_score = -math.inf
+        for person in people or []:
+            if not isinstance(person, dict):
+                continue
+            face_bbox = person.get("face_bbox")
+            if not face_bbox or len(face_bbox) < 4:
+                continue
+            x1, y1, x2, y2 = face_bbox[:4]
+            area = max(0.0, (float(x2) - float(x1)) * (float(y2) - float(y1)))
+            if area <= 0.0:
+                continue
+            confidence = _normalize_meta_number(person.get("face_confidence")) or 0.0
+            score = confidence * 0.6 + (area / frame_area)
+            if score > best_face_score:
+                best_face_score = score
+                selected_person = person
+
+        face_area_ratio = None
+        face_center_score = None
+        face_brightness = None
+        head_tilt = None
+        eye_focus = None
+        if selected_person is not None:
+            face_bbox = selected_person.get("face_bbox")
+            if isinstance(face_bbox, Sequence) and len(face_bbox) >= 4:
+                try:
+                    raw_x1, raw_y1, raw_x2, raw_y2 = map(float, face_bbox[:4])
+                except Exception:
+                    raw_x1 = raw_y1 = 0.0
+                    raw_x2 = float(width)
+                    raw_y2 = float(height)
+                x1 = int(max(0.0, min(raw_x1, float(width - 1))))
+                y1 = int(max(0.0, min(raw_y1, float(height - 1))))
+                x2 = int(max(float(x1 + 1), min(raw_x2, float(width))))
+                y2 = int(max(float(y1 + 1), min(raw_y2, float(height))))
+
+                face_w = float(max(x2 - x1, 1))
+                face_h = float(max(y2 - y1, 1))
+                face_area_ratio = (face_w * face_h) / frame_area
+                face_area_ratio = max(0.0, min(face_area_ratio, 1.0))
+                normalized_metrics["face_area"] = min(face_area_ratio / 0.05, 1.0)
+
+                frame_center_x = width * 0.5
+                frame_center_y = height * 0.5
+                face_center_x = x1 + face_w * 0.5
+                face_center_y = y1 + face_h * 0.5
+                dx = abs(face_center_x - frame_center_x) / max(frame_center_x, 1.0)
+                dy = abs(face_center_y - frame_center_y) / max(frame_center_y, 1.0)
+                center_distance = math.sqrt(dx * dx + dy * dy)
+                face_center_score = max(0.0, 1.0 - min(center_distance, 1.0))
+                normalized_metrics["face_centering"] = face_center_score
+
+                try:
+                    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+                    roi = hsv[y1:y2, x1:x2, 2]
+                    if roi.size:
+                        face_brightness = float(np.mean(roi) / 255.0)
+                        target_brightness = 0.6
+                        brightness_diff = abs(face_brightness - target_brightness)
+                        normalized_metrics["face_brightness"] = max(
+                            0.0, 1.0 - brightness_diff / target_brightness
+                        )
+                except Exception:
+                    face_brightness = None
+
+                head_tilt = _normalize_meta_number(selected_person.get("head_tilt"))
+                if head_tilt is not None:
+                    normalized_metrics["head_straightness"] = max(
+                        0.0, 1.0 - min(abs(head_tilt) / 0.35, 1.0)
+                    )
+
+                eyes = selected_person.get("eyes") if isinstance(selected_person, dict) else None
+                eye_confidences = []
+                if isinstance(eyes, dict):
+                    conf = eyes.get("confidences")
+                    if isinstance(conf, dict):
+                        for key in ("left", "right"):
+                            val = conf.get(key)
+                            norm = _normalize_meta_number(val)
+                            if norm is not None:
+                                eye_confidences.append(norm)
+                if eye_confidences:
+                    eye_focus = float(np.mean(eye_confidences))
+                    normalized_metrics["eye_focus"] = max(0.0, min(eye_focus, 1.0))
+                else:
+                    left_eye = eyes.get("left") if isinstance(eyes, dict) else None
+                    right_eye = eyes.get("right") if isinstance(eyes, dict) else None
+                    if (
+                        isinstance(left_eye, Sequence)
+                        and isinstance(right_eye, Sequence)
+                        and len(left_eye) >= 2
+                        and len(right_eye) >= 2
+                    ):
+                        left_y = float(left_eye[1])
+                        right_y = float(right_eye[1])
+                        vertical_diff = abs(left_y - right_y) / face_h
+                        eye_focus = max(0.0, 1.0 - min(vertical_diff / 0.15, 1.0))
+                        normalized_metrics["eye_focus"] = eye_focus
+
+        metrics["normalized"] = normalized_metrics
+        raw_metrics.update(
             {
-                "frame": frame.copy(),
                 "sharpness": sharpness,
-                "captured_at": float(captured_monotonic),
+                "frame_size": (width, height),
+                "face_area_ratio": face_area_ratio,
+                "face_center_score": face_center_score,
+                "face_brightness": face_brightness,
+                "head_tilt": head_tilt,
+                "eye_focus": eye_focus,
+                "selected_person": selected_person,
+                "selected_person_id": (
+                    selected_person.get("id") if isinstance(selected_person, dict) else None
+                ),
             }
         )
 
+        self._score_snapshot_candidate(candidate)
+
     def _select_best_snapshot_candidate(
         self, since_monotonic: Optional[float] = None
-    ) -> tuple[Optional[np.ndarray], Optional[float]]:
+    ) -> tuple[Optional[dict[str, Any]], Optional[float]]:
         if not self.snapshot_candidates:
             return None, None
 
         best_candidate: Optional[dict[str, Any]] = None
-        best_sharpness = -math.inf
+        best_score = -math.inf
+
         for candidate in self.snapshot_candidates:
             captured_at = candidate.get("captured_at")
             if since_monotonic is not None and isinstance(captured_at, (int, float)):
                 if float(captured_at) <= since_monotonic:
                     continue
 
-            sharpness = float(candidate.get("sharpness", 0.0))
-            if best_candidate is None or sharpness > best_sharpness:
+            score = candidate.get("score")
+            if score is None:
+                score = self._score_snapshot_candidate(candidate)
+
+            try:
+                numeric_score = float(score)
+            except (TypeError, ValueError):
+                numeric_score = 0.0
+
+            if best_candidate is None or numeric_score > best_score:
                 best_candidate = candidate
-                best_sharpness = sharpness
+                best_score = numeric_score
 
         if not best_candidate:
             return None, None
 
-        frame = best_candidate.get("frame")
+        metrics = best_candidate.get("metrics") or {}
+        normalized = metrics.get("normalized") or {}
+        log_parts = []
+        for key in ("sharpness", "face_area", "face_centering", "face_brightness", "head_straightness", "eye_focus"):
+            value = normalized.get(key)
+            if value is None:
+                log_parts.append(f"{key}=n/a")
+            else:
+                log_parts.append(f"{key}={float(value):.3f}")
+        log_message = ", ".join(log_parts)
+        logger.debug(
+            "[%s] Выбран кандидат снапшота: score=%.3f (%s)",
+            self.name,
+            float(best_candidate.get("score") or best_score),
+            log_message,
+        )
+
         captured_at = best_candidate.get("captured_at")
         captured_monotonic = float(captured_at) if isinstance(captured_at, (int, float)) else None
-        return frame, captured_monotonic
+        return best_candidate, captured_monotonic
 
     def _prune_snapshot_candidates(self, before_or_equal: Optional[float]) -> None:
         if before_or_equal is None:
@@ -491,7 +704,7 @@ class IngestWorker(Thread):
                     continue
 
                 failed_reads = 0
-                self._push_snapshot_candidate(frame, capture_monotonic)
+                current_candidate = self._push_snapshot_candidate(frame, capture_monotonic)
 
                 if (
                     target_interval > 0
@@ -540,17 +753,9 @@ class IngestWorker(Thread):
                         continue
                     frame = latest_frame
                     capture_monotonic = time.monotonic()
-                    self._push_snapshot_candidate(frame, capture_monotonic)
+                    current_candidate = self._push_snapshot_candidate(frame, capture_monotonic)
 
-                best_snapshot_frame, selected_capture_monotonic = self._select_best_snapshot_candidate(
-                    since_monotonic=self._last_snapshot_capture_monotonic
-                )
                 process_capture_monotonic = capture_monotonic
-                if selected_capture_monotonic is not None:
-                    self._last_snapshot_capture_monotonic = selected_capture_monotonic
-                else:
-                    self._last_snapshot_capture_monotonic = process_capture_monotonic
-                self._prune_snapshot_candidates(self._last_snapshot_capture_monotonic)
                 (
                     phone_usage_raw,
                     conf_raw,
@@ -559,9 +764,19 @@ class IngestWorker(Thread):
                     car_events,
                     people,
                 ) = self.detector.process_frame(frame)
-                if best_snapshot_frame is not None:
+                self._update_snapshot_candidate_metrics(current_candidate, frame, people)
+
+                best_candidate, selected_capture_monotonic = self._select_best_snapshot_candidate(
+                    since_monotonic=self._last_snapshot_capture_monotonic
+                )
+                if selected_capture_monotonic is not None:
+                    self._last_snapshot_capture_monotonic = selected_capture_monotonic
+                else:
+                    self._last_snapshot_capture_monotonic = process_capture_monotonic
+                self._prune_snapshot_candidates(self._last_snapshot_capture_monotonic)
+                if best_candidate and best_candidate.get("frame") is not None:
                     snapshot_img = prepare_snapshot(
-                        best_snapshot_frame,
+                        best_candidate["frame"],
                         self.detector.face_blur,
                         self.detector.face_cascade,
                     )
