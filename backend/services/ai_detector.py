@@ -21,6 +21,11 @@ try:
 except Exception:  # pragma: no cover - torch may отсутствовать в окружении
     torch = None
 
+try:  # pragma: no cover - mediapipe может отсутствовать в окружении
+    import mediapipe as mp
+except Exception:  # pragma: no cover - mediapipe не является обязательной зависимостью
+    mp = None
+
 from backend.core.config import settings
 from backend.core.logger import logger
 from backend.services.snapshots import load_face_cascade, prepare_snapshot
@@ -128,18 +133,18 @@ def _download_file(url: str, destination: Path) -> None:
 
 
 def _ensure_face_weights(*, allow_missing: bool = False) -> Optional[str]:
-    """Возвращает путь до весов face-модели, скачивая их при необходимости.
+    """Возвращает путь до весов face-модели, скачивая их при необходимости."""
 
-    Если веса не удалось найти и ``allow_missing`` равно ``True``, функция
-    возвращает ``None`` вместо выброса исключения. Это позволяет сервису
-    деградировать без полного отказа потоковой обработки.
-    """
+    preferred_path = settings.face_detector_weights_path
+    configured = (settings.face_detector_weights or settings.yolo_face_model or "").strip()
 
-    configured = settings.yolo_face_model.strip()
-    if not configured:
-        raise ValueError("Не задано имя весов для детектора лиц")
+    if not configured or preferred_path is None:
+        message = "Не задан путь до весов детектора лиц"
+        if allow_missing:
+            logger.warning(message)
+            return None
+        raise ValueError(message)
 
-    preferred_path = settings.yolo_face_model_path
     candidates = [preferred_path]
     raw_candidate = Path(configured)
     if raw_candidate != preferred_path:
@@ -190,6 +195,64 @@ def _ensure_face_weights(*, allow_missing: bool = False) -> Optional[str]:
     raise FileNotFoundError(message)
 
 
+class _MediaPipeFaceDetector:
+    """Обёртка над MediaPipe Face Detection с унифицированным интерфейсом."""
+
+    def __init__(self, *, min_confidence: float = 0.5) -> None:
+        if mp is None:
+            raise ImportError("mediapipe не установлен")
+        self._min_confidence = float(min_confidence)
+        # model_selection=1 — более дальний диапазон, подходит для камер наблюдения
+        self._detector = mp.solutions.face_detection.FaceDetection(
+            model_selection=1, min_detection_confidence=self._min_confidence
+        )
+
+    def detect(self, frame: np.ndarray) -> List[Dict[str, Any]]:
+        if self._detector is None:
+            return []
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self._detector.process(rgb)
+        detections: List[Dict[str, Any]] = []
+        if not results or not getattr(results, "detections", None):
+            return detections
+
+        height, width = frame.shape[:2]
+        for detection in results.detections:
+            location = getattr(detection, "location_data", None)
+            relative = getattr(location, "relative_bounding_box", None)
+            if relative is None:
+                continue
+            xmin = float(getattr(relative, "xmin", 0.0))
+            ymin = float(getattr(relative, "ymin", 0.0))
+            w_box = float(getattr(relative, "width", 0.0))
+            h_box = float(getattr(relative, "height", 0.0))
+            if w_box <= 0.0 or h_box <= 0.0:
+                continue
+            score = float(detection.score[0]) if getattr(detection, "score", None) else 0.0
+
+            x1 = max(0.0, min(1.0, xmin)) * width
+            y1 = max(0.0, min(1.0, ymin)) * height
+            x2 = max(0.0, min(1.0, xmin + w_box)) * width
+            y2 = max(0.0, min(1.0, ymin + h_box)) * height
+            if x2 <= x1 or y2 <= y1:
+                continue
+            detections.append(
+                {"bbox": np.array([x1, y1, x2, y2], dtype=np.float32), "conf": score, "used": False}
+            )
+        return detections
+
+    def close(self) -> None:
+        if self._detector is not None:
+            try:
+                self._detector.close()
+            except Exception:
+                pass
+            self._detector = None
+
+    def __del__(self) -> None:  # pragma: no cover - финализатор используется в проде
+        self.close()
+
+
 def resolve_device(preferred: Optional[str] = None, cuda_env: Optional[str] = None) -> str:
     """Выбирает устройство для инференса: GPU, если доступно, иначе CPU."""
     if preferred and preferred.strip().lower() not in {"auto", ""}:
@@ -230,29 +293,28 @@ class AIDetector:
 
         det_weights = settings.yolo_det_model
         pose_weights = settings.yolo_pose_model
-        face_weights = _ensure_face_weights(allow_missing=True)
         self.device_preference = settings.yolo_device
         self.device = resolve_device(self.device_preference, settings.cuda_visible_devices)
 
         self.det = YOLO(det_weights)
         self.pose = YOLO(pose_weights)
-        self.face_det: Optional[YOLO] = None
-        if face_weights:
-            try:
-                self.face_det = YOLO(face_weights)
-            except Exception:
-                logger.exception(
-                    "Не удалось инициализировать детектор лиц YOLO по весам %s",
-                    face_weights,
-                )
+        self.face_conf = settings.yolo_face_conf
+        self.face_detector_requested = (settings.face_detector_type or "yolo").strip().lower()
+        self.face_device_preference = (settings.face_detector_device or "").strip() or None
+        if self.face_device_preference is not None:
+            self.face_device = resolve_device(self.face_device_preference, settings.cuda_visible_devices)
+        else:
+            self.face_device = self.device
+        self.face_predict_device = None if self.face_device in {"cpu", "auto"} else self.face_device
+        self.face_detector: Optional[Any] = None
+        self.face_detector_kind: str = "none"
         self._face_warning_shown = False
+
         self.device_error: Optional[str] = None
         self.actual_device: Optional[str] = None
         try:
             self.det.to(self.device)
             self.pose.to(self.device)
-            if self.face_det is not None:
-                self.face_det.to(self.device)
         except Exception as exc:
             self.device_error = str(exc).strip() or None
         finally:
@@ -263,12 +325,13 @@ class AIDetector:
             else:
                 self.actual_device = str(self.device)
 
+        self._initialize_face_detector()
+
         self.predict_device = None if self.device in {"cpu", "auto"} else self.device
 
         self.det_imgsz = settings.yolo_image_size
         self.det_conf = settings.phone_det_conf
         self.pose_conf = settings.pose_det_conf
-        self.face_conf = settings.yolo_face_conf
         self.phone_score_threshold = settings.phone_score_threshold
         self.phone_hand_dist_ratio = settings.phone_hand_dist_ratio
         self.phone_head_dist_ratio = settings.phone_head_dist_ratio
@@ -297,6 +360,84 @@ class AIDetector:
         self.employee_recognizer: Optional["EmployeeRecognizer"] = None
         self._zones: list[list[tuple[float, float]]] = []
         self.update_zones(zones)
+
+    def _initialize_face_detector(self) -> None:
+        """Подбирает и инициализирует специализированный детектор лиц."""
+
+        requested = (self.face_detector_requested or "yolo").strip().lower()
+        if not requested or requested == "auto":
+            requested = "yolo"
+
+        attempts: List[str] = []
+        if requested == "mediapipe":
+            attempts = ["mediapipe", "yolo"]
+        elif requested in {"yolo", "yolov8", "yolov8-face"}:
+            attempts = ["yolo"]
+        else:
+            attempts = [requested, "yolo"] if requested != "yolo" else ["yolo"]
+
+        for kind in attempts:
+            if kind == "mediapipe":
+                try:
+                    self.face_detector = _MediaPipeFaceDetector(min_confidence=self.face_conf)
+                    self.face_detector_kind = "mediapipe"
+                    self.face_predict_device = None
+                    logger.info("[%s] Активирован детектор лиц MediaPipe", self.camera_name)
+                    return
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] Не удалось инициализировать MediaPipe Face Detection: %s",
+                        self.camera_name,
+                        exc,
+                    )
+                    self.face_detector = None
+                    continue
+
+            if kind in {"yolo", "yolov8", "yolov8-face"}:
+                face_weights = _ensure_face_weights(allow_missing=True)
+                if not face_weights:
+                    continue
+                try:
+                    model = YOLO(face_weights)
+                except Exception:
+                    logger.exception(
+                        "[%s] Не удалось инициализировать YOLO-детектор лиц по весам %s",
+                        self.camera_name,
+                        face_weights,
+                    )
+                    self.face_detector = None
+                    continue
+                try:
+                    model.to(self.face_device)
+                except Exception:
+                    logger.exception(
+                        "[%s] Ошибка переноса YOLO-детектора лиц на устройство %s",
+                        self.camera_name,
+                        self.face_device,
+                    )
+                    self.face_device = self.device
+                self.face_predict_device = (
+                    None if self.face_device in {"cpu", "auto"} else self.face_device
+                )
+                self.face_detector = model
+                self.face_detector_kind = "yolo"
+                logger.info(
+                    "[%s] Активирован YOLO-детектор лиц (%s)",
+                    self.camera_name,
+                    face_weights,
+                )
+                return
+
+            if kind not in {"mediapipe", "yolo", "yolov8", "yolov8-face"}:
+                logger.warning(
+                    "[%s] Неизвестный тип детектора лиц '%s'. Использую YOLO как запасной вариант.",
+                    self.camera_name,
+                    kind,
+                )
+
+        self.face_detector = None
+        self.face_detector_kind = "none"
+        self.face_predict_device = None if self.face_device in {"cpu", "auto"} else self.face_device
 
     def update_flags(
         self,
@@ -558,28 +699,38 @@ class AIDetector:
             det_res = self.det(frame, **det_kwargs)[0]
 
         face_detections: List[Dict[str, Any]] = []
-        if detect_person and self.face_det is not None:
-            face_kwargs = {"imgsz": self.det_imgsz, "conf": self.face_conf}
-            if self.predict_device:
-                face_kwargs["device"] = self.predict_device
-            try:
-                face_results = self.face_det(frame, **face_kwargs)
-            except Exception:
-                face_results = None
-            face_prediction = face_results[0] if face_results else None
-            boxes = getattr(face_prediction, "boxes", None)
-            if boxes is not None:
-                for b in boxes:
-                    try:
-                        xyxy = b.xyxy[0].cpu().numpy()
-                    except Exception:
-                        xyxy = np.asarray(b.xyxy[0])
-                    conf = float(b.conf[0]) if getattr(b, "conf", None) is not None else 0.0
-                    face_detections.append({"bbox": xyxy, "conf": conf, "used": False})
-        elif detect_person and self.face_det is None:
+        if detect_person and self.face_detector is not None:
+            if self.face_detector_kind == "yolo":
+                face_kwargs = {"imgsz": self.det_imgsz, "conf": self.face_conf}
+                if self.face_predict_device:
+                    face_kwargs["device"] = self.face_predict_device
+                try:
+                    face_results = self.face_detector(frame, **face_kwargs)
+                except Exception:
+                    face_results = None
+                face_prediction = face_results[0] if face_results else None
+                boxes = getattr(face_prediction, "boxes", None)
+                if boxes is not None:
+                    for b in boxes:
+                        try:
+                            xyxy = b.xyxy[0].cpu().numpy()
+                        except Exception:
+                            xyxy = np.asarray(b.xyxy[0])
+                        conf = float(b.conf[0]) if getattr(b, "conf", None) is not None else 0.0
+                        face_detections.append({"bbox": xyxy, "conf": conf, "used": False})
+            elif self.face_detector_kind == "mediapipe":
+                try:
+                    detections = self.face_detector.detect(frame)
+                except Exception:
+                    logger.exception(
+                        "[%s] Ошибка MediaPipe при поиске лиц — использую fallback", self.camera_name
+                    )
+                    detections = []
+                face_detections.extend(detections)
+        elif detect_person and self.face_detector is None:
             if not getattr(self, "_face_warning_shown", False):
                 logger.warning(
-                    "Детектор лиц не активирован: веса не найдены. Поток продолжает работу без поиска лиц."
+                    "Детектор лиц не активирован: используется fallback по телу."
                 )
                 self._face_warning_shown = True
 
