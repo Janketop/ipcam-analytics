@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     rtsp_sources: str = Field("")
     rtsp_reconnect_delay: float = Field(5.0, ge=0.5)
     rtsp_max_failed_reads: int = Field(25, ge=1)
-    ingest_fps_skip: int = Field(2, ge=1)
+    ingest_target_fps: float = Field(10.0, ge=1.0)
     ingest_flush_timeout: float = Field(0.2, ge=0.0)
     ingest_status_interval: float = Field(5.0, ge=0.5)
     ingest_status_stale_threshold: float = Field(30.0, ge=1.0)
