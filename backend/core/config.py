@@ -86,7 +86,7 @@ class Settings(BaseSettings):
     yolo_pose_model: str = Field("yolov8n-pose.pt")
     yolo_face_model: str = Field("weights/yolov11n-face.pt")
     yolo_face_model_url: Optional[str] = Field(
-        "https://huggingface.co/AdamCodd/YOLOv11n-face-detection/resolve/main/yolov11n-face.pt"
+        "https://github.com/YapaLab/yolo-face/releases/latest/download/yolov11n-face.pt"
     )
     face_detector_type: str = Field("yolo")
     face_detector_weights: Optional[str] = Field(None)
