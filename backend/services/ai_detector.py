@@ -570,8 +570,21 @@ class AIDetector:
                 and callable(getattr(torch.cuda, "is_available", None))
                 and torch.cuda.is_available()
             )
+            reader_kwargs: Dict[str, Any] = {}
             try:
-                self.ocr_reader = Reader(langs, gpu=use_gpu)
+                storage_dir = settings.easyocr_model_dir_path
+                storage_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Не удалось подготовить каталог для моделей EasyOCR (%s): %s",
+                    self.camera_name,
+                    settings.easyocr_model_dir,
+                    exc,
+                )
+            else:
+                reader_kwargs["model_storage_directory"] = str(storage_dir)
+            try:
+                self.ocr_reader = Reader(langs, gpu=use_gpu, **reader_kwargs)
             except Exception as exc:
                 if use_gpu:
                     logger.warning(
@@ -581,7 +594,7 @@ class AIDetector:
                         exc_info=True,
                     )
                     try:
-                        self.ocr_reader = Reader(langs, gpu=False)
+                        self.ocr_reader = Reader(langs, gpu=False, **reader_kwargs)
                     except Exception as cpu_exc:
                         logger.warning(
                             "[%s] Не удалось инициализировать OCR даже на CPU: %s",
