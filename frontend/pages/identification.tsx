@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Layout from '../components/Layout';
 import { useApiBase } from '../hooks/useApiBase';
 import { Employee, FaceSample } from '../types/api';
@@ -16,10 +16,18 @@ const IdentificationPage = () => {
   const [samples, setSamples] = useState<FaceSample[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [uploadMessage, setUploadMessage] = useState<string | null>(null);
   const [pendingSampleId, setPendingSampleId] = useState<number | null>(null);
   const [selectedEmployee, setSelectedEmployee] = useState<Record<number, number | ''>>({});
   const [newEmployeeName, setNewEmployeeName] = useState<Record<number, string>>({});
   const [newEmployeeAccountId, setNewEmployeeAccountId] = useState<Record<number, string>>({});
+  const [uploadEmployeeId, setUploadEmployeeId] = useState<number | ''>('');
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState<boolean>(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const MAX_FILE_SIZE = 5 * 1024 * 1024;
+  const allowedMimeTypes = useMemo(() => new Set(['image/jpeg', 'image/png', 'image/jpg']), []);
 
   const fetchEmployees = useCallback(async () => {
     const response = await fetch(`${normalizedApiBase}/employees`);
@@ -78,6 +86,94 @@ const IdentificationPage = () => {
   useEffect(() => {
     refreshAll();
   }, [refreshAll]);
+
+  const handleFileChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      setUploadMessage(null);
+      setError(null);
+      const files = event.target.files;
+      if (!files || files.length === 0) {
+        setUploadFile(null);
+        return;
+      }
+      const file = files[0];
+      setUploadFile(file);
+    },
+    []
+  );
+
+  const handleUpload = useCallback(
+    async (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      setUploadMessage(null);
+
+      if (!uploadEmployeeId) {
+        setError('Сначала выберите сотрудника, к которому нужно привязать эталон.');
+        return;
+      }
+
+      if (!uploadFile) {
+        setError('Выберите файл с фотографией сотрудника.');
+        return;
+      }
+
+      if (uploadFile.size > MAX_FILE_SIZE) {
+        setError('Файл слишком большой. Максимальный размер — 5 МБ.');
+        return;
+      }
+
+      const mimeType = (uploadFile.type || '').toLowerCase();
+      if (!allowedMimeTypes.has(mimeType)) {
+        setError('Поддерживаются только изображения в форматах JPG или PNG.');
+        return;
+      }
+
+      setError(null);
+      setUploading(true);
+      try {
+        const formData = new FormData();
+        formData.append('file', uploadFile, uploadFile.name);
+        const response = await fetch(`${normalizedApiBase}/employees/${uploadEmployeeId}/photos`, {
+          method: 'POST',
+          body: formData,
+        });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          const detail = payload?.detail;
+          throw new Error(
+            typeof detail === 'string'
+              ? detail
+              : 'Не удалось загрузить эталон. Проверьте формат и размер изображения.'
+          );
+        }
+
+        await Promise.all([fetchEmployees(), fetchSamples()]);
+        setUploadMessage('Эталон успешно загружен и добавлен к сотруднику.');
+        setUploadEmployeeId('');
+        setUploadFile(null);
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
+      } catch (err) {
+        console.error(err);
+        setUploadMessage(null);
+        setError(
+          err instanceof Error ? err.message : 'Произошла ошибка при загрузке эталонного фото.'
+        );
+      } finally {
+        setUploading(false);
+      }
+    },
+    [
+      MAX_FILE_SIZE,
+      allowedMimeTypes,
+      fetchEmployees,
+      fetchSamples,
+      normalizedApiBase,
+      uploadEmployeeId,
+      uploadFile,
+    ]
+  );
 
   const employeeOptions = useMemo(() => {
     return employees.map(employee => {
@@ -230,6 +326,101 @@ const IdentificationPage = () => {
             можно выбрать сотрудника из списка или создать новую запись. Если на фото клиент, пометьте его
             соответствующей кнопкой — запись не попадёт в справочник сотрудников.
           </p>
+        </section>
+
+        <section
+          style={{
+            background: '#fff',
+            padding: 24,
+            borderRadius: 16,
+            border: '1px solid #e2e8f0',
+            boxShadow: '0 16px 32px rgba(15,23,42,0.06)',
+          }}
+        >
+          <h2 style={{ marginTop: 0, marginBottom: 12 }}>Загрузка собственного эталона</h2>
+          <p style={{ marginTop: 0, marginBottom: 16, color: '#475569', lineHeight: 1.6 }}>
+            Загрузите фотографию сотрудника, чтобы сразу добавить его эталон в систему. Выберите существующего
+            сотрудника и изображение в формате JPG или PNG размером до 5 МБ. После загрузки снимок
+            появится в списке эталонов и будет использоваться при идентификации.
+          </p>
+          {uploadMessage && (
+            <div
+              style={{
+                background: '#dcfce7',
+                color: '#14532d',
+                padding: '12px 16px',
+                borderRadius: 12,
+                border: '1px solid #bbf7d0',
+                marginBottom: 16,
+              }}
+            >
+              {uploadMessage}
+            </div>
+          )}
+          <form onSubmit={handleUpload} encType="multipart/form-data" style={{ display: 'grid', gap: 16 }}>
+            <label style={{ display: 'grid', gap: 8 }}>
+              <span style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>Сотрудник</span>
+              <select
+                value={uploadEmployeeId}
+                onChange={event => {
+                  const value = event.target.value;
+                  setError(null);
+                  setUploadMessage(null);
+                  setUploadEmployeeId(value ? Number.parseInt(value, 10) : '');
+                }}
+                disabled={employees.length === 0 || uploading}
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 8,
+                  border: '1px solid #cbd5f5',
+                  fontSize: 14,
+                }}
+              >
+                <option value="">— Не выбрано —</option>
+                {employeeOptions}
+              </select>
+            </label>
+
+            <label style={{ display: 'grid', gap: 8 }}>
+              <span style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>Файл изображения</span>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/jpeg,image/png"
+                onChange={handleFileChange}
+                disabled={uploading}
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: 8,
+                  border: '1px solid #cbd5f5',
+                  fontSize: 14,
+                  background: '#fff',
+                }}
+              />
+              {uploadFile && (
+                <span style={{ fontSize: 13, color: '#475569' }}>
+                  Выбран файл: {uploadFile.name} ({Math.round(uploadFile.size / 1024)} КБ)
+                </span>
+              )}
+            </label>
+
+            <button
+              type="submit"
+              disabled={uploading || !uploadEmployeeId || !uploadFile}
+              style={{
+                padding: '10px 16px',
+                borderRadius: 10,
+                border: 'none',
+                background:
+                  uploading || !uploadEmployeeId || !uploadFile ? '#cbd5f5' : '#22c55e',
+                color: '#fff',
+                fontWeight: 600,
+                cursor: uploading || !uploadEmployeeId || !uploadFile ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {uploading ? 'Загрузка…' : 'Загрузить эталон'}
+            </button>
+          </form>
         </section>
 
         {error && (
