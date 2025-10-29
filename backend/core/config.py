@@ -84,9 +84,9 @@ class Settings(BaseSettings):
     cuda_visible_devices: Optional[str] = Field(None)
     yolo_det_model: str = Field("yolov8n.pt")
     yolo_pose_model: str = Field("yolov8n-pose.pt")
-    yolo_face_model: str = Field("weights/yolo11n.pt")
+    yolo_face_model: str = Field("weights/yolov11n-face.pt")
     yolo_face_model_url: Optional[str] = Field(
-        "https://github.com/ultralytics/assets/releases/latest/download/yolo11n.pt"
+        "https://github.com/YapaLab/yolo-face/releases/latest/download/yolov11n-face.pt"
     )
     face_detector_type: str = Field("yolo")
     face_detector_weights: Optional[str] = Field(None)
@@ -102,9 +102,9 @@ class Settings(BaseSettings):
     face_training_device: Optional[str] = Field(None)
     face_training_workers: int = Field(0, ge=0)
     face_training_project_dir: str = Field("runs/face")
-    face_training_run_name: str = Field("yolo11n-widerface")
+    face_training_run_name: str = Field("yolov11n-widerface")
     face_training_base_weights: str = Field("yolo11n.pt")
-    face_training_output_weights: str = Field("backend/weights/yolo11n-face.pt")
+    face_training_output_weights: str = Field("backend/weights/yolov11n-face.pt")
 
     phone_det_conf: float = Field(0.3, ge=0.05)
     pose_det_conf: float = Field(0.3, ge=0.05)
