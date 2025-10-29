@@ -47,6 +47,9 @@ CREATE TABLE IF NOT EXISTS face_samples (
   snapshot_url TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'unverified',
   candidate_key TEXT,
+  embedding BYTEA,
+  embedding_dim INTEGER,
+  embedding_model TEXT,
   captured_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
