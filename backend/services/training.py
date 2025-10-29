@@ -26,6 +26,7 @@ class FaceTrainingOptions:
     run_name: str
     base_weights: Path
     output_weights: Path
+    workers: int
 
 
 def build_face_training_options(
@@ -40,6 +41,7 @@ def build_face_training_options(
     run_name: str | None = None,
     base_weights: str | Path | None = None,
     output_weights: str | Path | None = None,
+    workers: int | None = None,
 ) -> FaceTrainingOptions:
     """Собирает итоговые параметры обучения из входных данных и настроек."""
 
@@ -75,6 +77,7 @@ def build_face_training_options(
         run_name=run_name if run_name is not None else settings.face_training_run_name,
         base_weights=base_weights_path,
         output_weights=output_weights_path,
+        workers=workers if workers is not None else settings.face_training_workers,
     )
     return options
 
@@ -102,6 +105,7 @@ def _run_face_training(options: FaceTrainingOptions) -> Path:
         project=options.project,
         name=options.run_name,
         output_weights=options.output_weights,
+        workers=options.workers,
     )
     return result
 
@@ -195,12 +199,13 @@ class FaceDetectorTrainingService:
         """Запускает обучение в отдельном потоке."""
 
         logger.info(
-            "Запуск обучения детектора лиц: dataset=%s, epochs=%d, batch=%d, imgsz=%d, device=%s",
+            "Запуск обучения детектора лиц: dataset=%s, epochs=%d, batch=%d, imgsz=%d, device=%s, workers=%d",
             options.dataset_root,
             options.epochs,
             options.batch,
             options.imgsz,
             options.device or "auto",
+            options.workers,
         )
         try:
             await asyncio.to_thread(_run_face_training, options)
