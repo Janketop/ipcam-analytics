@@ -6,10 +6,7 @@ from threading import Lock
 from typing import Optional, Sequence, Union
 
 import numpy as np
-try:  # pragma: no cover - основное использование с настоящим sklearn
-    from sklearn.neighbors import KDTree  # type: ignore
-except ModuleNotFoundError:  # pragma: no cover - минимальный fallback для тестов
-    from backend.utils.kdtree_stub import KDTree
+import torch
 from sqlalchemy import select
 
 from backend.core.config import settings
@@ -45,6 +42,8 @@ class RecognizedEmployee:
     employee_id: int
     employee_name: str
     distance: float
+    backend: str
+    metric: str
 
 
 class EmployeeRecognizer:
@@ -77,12 +76,16 @@ class EmployeeRecognizer:
             self._model_metadata.get("device"),
         )
 
-        self._tree: Optional[KDTree] = None
-        self._embeddings: Optional[np.ndarray] = None
+        self._embeddings_cpu: Optional[np.ndarray] = None
+        self._embeddings_torch_cpu: Optional[torch.Tensor] = None
+        self._embeddings_gpu: Optional[torch.Tensor] = None
         self._employee_ids: list[int] = []
         self._employee_names: list[str] = []
         self._embedding_dim: Optional[int] = None
         self._local_version = -1
+        self._preferred_device = (
+            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        )
 
         self.refresh_cache(force=True)
 
@@ -105,7 +108,7 @@ class EmployeeRecognizer:
 
     @property
     def has_samples(self) -> bool:
-        return bool(self._tree and self._employee_ids)
+        return bool(self._embeddings_torch_cpu is not None and self._employee_ids)
 
     # --- Публичные методы ---------------------------------------------------
     def refresh_cache(self, *, force: bool = False) -> None:
@@ -186,8 +189,9 @@ class EmployeeRecognizer:
         if not vectors:
             if skipped:
                 logger.info("Не удалось загрузить эмбеддинги сотрудников (%s пропущено)", skipped)
-            self._tree = None
-            self._embeddings = None
+            self._embeddings_cpu = None
+            self._embeddings_torch_cpu = None
+            self._embeddings_gpu = None
             self._employee_ids = []
             self._employee_names = []
             self._embedding_dim = None
@@ -195,8 +199,22 @@ class EmployeeRecognizer:
             return
 
         embedding_matrix = np.vstack(vectors).astype(np.float32, copy=False)
-        self._tree = KDTree(embedding_matrix, metric="euclidean")
-        self._embeddings = embedding_matrix
+        torch_cpu = torch.from_numpy(embedding_matrix)
+        self._embeddings_cpu = embedding_matrix
+        self._embeddings_torch_cpu = torch_cpu
+        backend = "cpu"
+        if self._preferred_device.type == "cuda":
+            try:
+                self._embeddings_gpu = torch_cpu.to(self._preferred_device)
+                backend = "cuda"
+            except RuntimeError:
+                logger.warning(
+                    "Не удалось перенести эмбеддинги сотрудников на GPU, работаем на CPU",
+                )
+                backend = "cpu"
+                self._embeddings_gpu = None
+        else:
+            self._embeddings_gpu = None
         self._employee_ids = employee_ids
         self._employee_names = employee_names
         self._embedding_dim = int(embedding_matrix.shape[1])
@@ -209,6 +227,11 @@ class EmployeeRecognizer:
         )
         if skipped:
             logger.debug("Пропущено %d эмбеддингов из-за ошибок", skipped)
+        logger.debug(
+            "Эмбеддинги подготовлены для бэкэнда: %s (устройство=%s)",
+            backend,
+            self._preferred_device,
+        )
 
     def compute_embedding(
         self,
@@ -234,7 +257,11 @@ class EmployeeRecognizer:
 
         self.refresh_cache()
 
-        if self._tree is None or self._embedding_dim is None or not self._employee_ids:
+        if (
+            self._embeddings_torch_cpu is None
+            or self._embedding_dim is None
+            or not self._employee_ids
+        ):
             return None
 
         if isinstance(embedding, FaceEmbeddingResult):
@@ -251,18 +278,51 @@ class EmployeeRecognizer:
             )
             return None
 
-        distance, index = self._tree.query(vector.reshape(1, -1), k=1, return_distance=True)
-        best_distance = float(distance[0][0])
+        backend = "cuda"
+        embeddings_tensor: torch.Tensor
+        if self._embeddings_gpu is not None and self._preferred_device.type == "cuda":
+            embeddings_tensor = self._embeddings_gpu
+        else:
+            backend = "cpu"
+            embeddings_tensor = self._embeddings_torch_cpu
+
+        metric = "euclidean"
+        with torch.no_grad():
+            query = torch.from_numpy(vector)
+            if backend == "cuda":
+                query = query.to(self._preferred_device)
+            else:
+                query = query.to(embeddings_tensor.device)
+            diff = embeddings_tensor - query.unsqueeze(0)
+            distances = torch.linalg.norm(diff, dim=1)
+            best_distance_tensor, best_idx_tensor = torch.min(distances, dim=0)
+
+        best_distance = float(best_distance_tensor.item())
         if best_distance > self.threshold:
+            logger.debug(
+                "Лучший кандидат превышает порог: distance=%.4f, threshold=%.4f, backend=%s",
+                best_distance,
+                self.threshold,
+                backend,
+            )
             return None
 
-        best_idx = int(index[0][0])
+        best_idx = int(best_idx_tensor.item())
         employee_id = self._employee_ids[best_idx]
         employee_name = self._employee_names[best_idx]
+        logger.debug(
+            "Распознан сотрудник %s (id=%s, distance=%.4f, backend=%s)",
+            employee_name,
+            employee_id,
+            best_distance,
+            backend,
+        )
         return RecognizedEmployee(
             employee_id=employee_id,
             employee_name=employee_name,
             distance=best_distance,
+            backend=backend,
+            metric=metric,
         )
 
 
