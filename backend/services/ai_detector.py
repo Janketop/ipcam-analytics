@@ -39,6 +39,7 @@ PHONE_CLASS = "cell phone"
 _GITHUB_RELEASES_API = "https://api.github.com/repos/YapaLab/yolo-face/releases"
 
 _DEFAULT_FACE_WEIGHT_URLS: tuple[str, ...] = (
+    "https://github.com/YapaLab/yolo-face/releases/latest/download/yolov11m-face.pt",
     "https://github.com/YapaLab/yolo-face/releases/latest/download/yolov11n-face.pt",
     "https://github.com/YapaLab/yolo-face/releases/latest/download/yolov8n-face.pt",
     "https://github.com/ultralytics/assets/releases/latest/download/yolo11n.pt",
