@@ -981,6 +981,8 @@ class AIDetector:
                             "id": match.employee_id,
                             "name": match.employee_name,
                             "distance": float(match.distance),
+                            "backend": match.backend,
+                            "metric": match.metric,
                         }
                         employee_name = match.employee_name
 
