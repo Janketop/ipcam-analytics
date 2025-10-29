@@ -744,6 +744,7 @@ class AIDetector:
 
         phones: List[Dict[str, Any]] = []
         cars: List[Dict[str, Any]] = []
+        person_detections: List[Dict[str, Any]] = []
         boxes = getattr(det_res, "boxes", None) if det_res is not None else None
         if boxes is not None:
             for b in boxes:
@@ -753,6 +754,7 @@ class AIDetector:
                     continue
                 conf = float(b.conf[0]) if getattr(b, "conf", None) is not None else 0.0
                 xyxy = b.xyxy[0].cpu().numpy()
+                label = self.det_names.get(cls_idx)
                 if (
                     detect_person
                     and self.phone_idx is not None
@@ -764,6 +766,8 @@ class AIDetector:
                     phones.append({"bbox": xyxy, "center": np.array([cx, cy], dtype=np.float32), "conf": conf})
                 if detect_car and cls_idx in self.car_class_ids and conf >= self.car_conf_threshold:
                     cars.append({"bbox": xyxy, "conf": conf})
+                if detect_person and label and label.lower() == "person" and conf >= self.det_conf:
+                    person_detections.append({"bbox": xyxy, "conf": conf, "used": False})
 
         pose_res = None
         if detect_person:
@@ -771,6 +775,16 @@ class AIDetector:
             if self.predict_device:
                 pose_kwargs["device"] = self.predict_device
             pose_res = self.pose(frame, **pose_kwargs)[0]
+
+        num_pose_keypoints = 17
+        pose_model = getattr(self.pose, "model", None)
+        pose_inner_model = getattr(pose_model, "model", None)
+        pose_kpt_shape = getattr(pose_inner_model, "kpt_shape", None)
+        if isinstance(pose_kpt_shape, (list, tuple)) and pose_kpt_shape:
+            try:
+                num_pose_keypoints = int(pose_kpt_shape[0])
+            except (TypeError, ValueError):
+                num_pose_keypoints = 17
 
         phone_usage = False
         best_conf = 0.0
@@ -856,7 +870,7 @@ class AIDetector:
         people_data: List[Dict[str, Any]] = []
 
         if not detect_person:
-            people_iter = []
+            people_iter: List[Dict[str, Any]] = []
         elif pose_res is None or pose_res.boxes is None or pose_res.keypoints is None:
             people_iter = []
         else:
@@ -882,12 +896,26 @@ class AIDetector:
                 if box_ids is not None
                 else [None] * len(kpts_xy)
             )
-            people_iter = zip(
+            people_iter = []
+            for kpts, bbox, conf_row, box_id in zip(
                 kpts_xy,
                 boxes_xyxy,
                 kpts_conf if kpts_conf is not None else [None] * len(kpts_xy),
                 id_iter,
-            )
+            ):
+                people_iter.append(
+                    {
+                        "kpts": np.asarray(kpts, dtype=np.float32),
+                        "bbox": np.asarray(bbox, dtype=np.float32),
+                        "kconf": None
+                        if conf_row is None
+                        else np.asarray(conf_row, dtype=np.float32),
+                        "box_id": box_id,
+                        "det_bbox": None,
+                        "det_conf": None,
+                        "pose_missing": False,
+                    }
+                )
 
         recognizer = self.employee_recognizer
 
@@ -910,8 +938,50 @@ class AIDetector:
                 return 0.0
             return inter_area / denom
 
-        for kpts, bbox, kconf, box_id in people_iter:
-            bbox_arr = np.asarray(bbox, dtype=np.float32).reshape(-1)
+        if detect_person and person_detections:
+            match_threshold = 0.3
+            for person in people_iter:
+                best_det = None
+                best_iou = 0.0
+                for det in person_detections:
+                    if det.get("used"):
+                        continue
+                    iou = _bbox_iou(person["bbox"], det["bbox"])
+                    if iou > best_iou:
+                        best_iou = iou
+                        best_det = det
+                if best_det is not None and best_iou >= match_threshold:
+                    best_det["used"] = True
+                    person["det_bbox"] = np.asarray(best_det["bbox"], dtype=np.float32)
+                    person["det_conf"] = float(best_det["conf"])
+            for det in person_detections:
+                if det.get("used"):
+                    continue
+                bbox_arr = np.asarray(det["bbox"], dtype=np.float32)
+                dummy_kpts = np.zeros((num_pose_keypoints, 2), dtype=np.float32)
+                dummy_conf = np.zeros(num_pose_keypoints, dtype=np.float32)
+                people_iter.append(
+                    {
+                        "kpts": dummy_kpts,
+                        "bbox": bbox_arr,
+                        "kconf": dummy_conf,
+                        "box_id": None,
+                        "det_bbox": bbox_arr,
+                        "det_conf": float(det["conf"]),
+                        "pose_missing": True,
+                    }
+                )
+
+        for person in people_iter:
+            kpts = person["kpts"]
+            bbox_pose = person["bbox"]
+            kconf = person.get("kconf")
+            box_id = person.get("box_id")
+            det_bbox = person.get("det_bbox")
+            det_conf = person.get("det_conf")
+            pose_missing = person.get("pose_missing", False)
+            bbox_source = det_bbox if det_bbox is not None else bbox_pose
+            bbox_arr = np.asarray(bbox_source, dtype=np.float32).reshape(-1)
             if bbox_arr.size < 4:
                 padded = np.zeros(4, dtype=np.float32)
                 padded[: bbox_arr.size] = bbox_arr
@@ -924,18 +994,21 @@ class AIDetector:
             right_eye_coords: Optional[List[float]] = None
             left_eye_conf: Optional[float] = None
             right_eye_conf: Optional[float] = None
-            try:
-                le = np.asarray(kpts[1], dtype=np.float32)
-                re = np.asarray(kpts[2], dtype=np.float32)
-                head_tilt = abs(float(le[1]) - float(re[1])) / (
-                    abs(float(le[0]) - float(re[0])) + 1e-3
-                )
-                left_eye_coords = le.tolist()
-                right_eye_coords = re.tolist()
-                if kconf is not None and len(kconf) > 2:
-                    left_eye_conf = float(kconf[1]) if kconf[1] is not None else None
-                    right_eye_conf = float(kconf[2]) if kconf[2] is not None else None
-            except Exception:
+            if not pose_missing:
+                try:
+                    le = np.asarray(kpts[1], dtype=np.float32)
+                    re = np.asarray(kpts[2], dtype=np.float32)
+                    head_tilt = abs(float(le[1]) - float(re[1])) / (
+                        abs(float(le[0]) - float(re[0])) + 1e-3
+                    )
+                    left_eye_coords = le.tolist()
+                    right_eye_coords = re.tolist()
+                    if kconf is not None and len(kconf) > 2:
+                        left_eye_conf = float(kconf[1]) if kconf[1] is not None else None
+                        right_eye_conf = float(kconf[2]) if kconf[2] is not None else None
+                except Exception:
+                    head_tilt = 0.0
+            else:
                 head_tilt = 0.0
 
             bbox_h = max(1.0, float(bbox_arr[3] - bbox_arr[1]))
@@ -999,6 +1072,8 @@ class AIDetector:
                         employee_name = match.employee_name
 
             def point_valid(idx, conf_threshold=0.2):
+                if pose_missing:
+                    return False
                 if idx >= len(kpts):
                     return False
                 if kconf is None or idx >= len(kconf):
@@ -1018,41 +1093,53 @@ class AIDetector:
             head_center = np.mean(head_points, axis=0) if head_points else None
 
             pose_heuristic_score = 0.0
-            for phone in phones:
-                near_hand = False
-                if wrists:
-                    dists = [np.linalg.norm(phone["center"] - wrist) for wrist in wrists]
-                    if dists:
-                        rel = min(dists) / bbox_h
-                        near_hand = rel <= self.phone_hand_dist_ratio
-
-                near_head = False
-                if head_center is not None:
-                    rel_head = np.linalg.norm(phone["center"] - head_center) / bbox_h
-                    near_head = rel_head <= self.phone_head_dist_ratio
-
-                score = 0.0
-                if near_hand:
-                    score += 0.6
-                if near_head:
-                    score += 0.2
-                if head_tilt > 0.25:
-                    score += 0.1
-                score += min(phone["conf"], 1.0) * 0.1
-
-                if score >= self.phone_score_threshold:
-                    phone_usage = True
-                    best_conf = max(best_conf, score)
-
-                if need_overlay and vis is not None:
-                    cx, cy = map(int, phone["center"])
-                    color = (0, 0, 255) if score >= self.phone_score_threshold else (0, 165, 255)
-                    cv2.circle(vis, (cx, cy), 6, color, -1)
+            if not pose_missing:
+                for phone in phones:
+                    near_hand = False
                     if wrists:
-                        closest = min(wrists, key=lambda p: np.linalg.norm(phone["center"] - p))
-                        cv2.line(vis, (cx, cy), tuple(map(int, closest)), color, 2)
+                        dists = [np.linalg.norm(phone["center"] - wrist) for wrist in wrists]
+                        if dists:
+                            rel = min(dists) / bbox_h
+                            near_hand = rel <= self.phone_hand_dist_ratio
+
+                    near_head = False
                     if head_center is not None:
-                        cv2.line(vis, (cx, cy), tuple(map(int, head_center)), (200, 50, 200), 1)
+                        rel_head = np.linalg.norm(phone["center"] - head_center) / bbox_h
+                        near_head = rel_head <= self.phone_head_dist_ratio
+
+                    score = 0.0
+                    if near_hand:
+                        score += 0.6
+                    if near_head:
+                        score += 0.2
+                    if head_tilt > 0.25:
+                        score += 0.1
+                    score += min(phone["conf"], 1.0) * 0.1
+
+                    if score >= self.phone_score_threshold:
+                        phone_usage = True
+                        best_conf = max(best_conf, score)
+
+                    if need_overlay and vis is not None:
+                        cx, cy = map(int, phone["center"])
+                        color = (0, 0, 255) if score >= self.phone_score_threshold else (0, 165, 255)
+                        cv2.circle(vis, (cx, cy), 6, color, -1)
+                        if wrists:
+                            closest = min(wrists, key=lambda p: np.linalg.norm(phone["center"] - p))
+                            cv2.line(vis, (cx, cy), tuple(map(int, closest)), color, 2)
+                        if head_center is not None:
+                            cv2.line(vis, (cx, cy), tuple(map(int, head_center)), (200, 50, 200), 1)
+            else:
+                if need_overlay and vis is not None:
+                    for phone in phones:
+                        x1_p, y1_p, x2_p, y2_p = phone["bbox"]
+                        cv2.rectangle(
+                            vis,
+                            (int(x1_p), int(y1_p)),
+                            (int(x2_p), int(y2_p)),
+                            (0, 165, 255),
+                            1,
+                        )
 
             if need_overlay and vis is not None:
                 x1, y1, x2, y2 = map(int, bbox_arr[:4])
@@ -1067,12 +1154,13 @@ class AIDetector:
                     (0, 255, 0),
                     2,
                 )
-                pairs = [(5, 7), (7, 9), (6, 8), (8, 10), (5, 6), (11, 12), (11, 13), (13, 15), (12, 14), (14, 16)]
-                for (i, j) in pairs:
-                    if i < len(kpts) and j < len(kpts):
-                        p1 = tuple(map(int, kpts[i]))
-                        p2 = tuple(map(int, kpts[j]))
-                        cv2.line(vis, p1, p2, (255, 0, 0), 2)
+                if not pose_missing:
+                    pairs = [(5, 7), (7, 9), (6, 8), (8, 10), (5, 6), (11, 12), (11, 13), (13, 15), (12, 14), (14, 16)]
+                    for (i, j) in pairs:
+                        if i < len(kpts) and j < len(kpts):
+                            p1 = tuple(map(int, kpts[i]))
+                            p2 = tuple(map(int, kpts[j]))
+                            cv2.line(vis, p1, p2, (255, 0, 0), 2)
 
             if not phones and wrists:
                 wrist_head_rel = None
@@ -1093,14 +1181,16 @@ class AIDetector:
                     phone_usage = True
                     best_conf = max(best_conf, pose_heuristic_score)
                     if need_overlay and vis is not None:
-                        center_y = int((bbox[1] + bbox[3]) * 0.5)
+                        center_y = int((bbox_arr[1] + bbox_arr[3]) * 0.5)
                         cv2.putText(vis, "POSE PHONE", (x1, max(15, center_y)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
 
-            mean_conf = float(np.mean(kconf)) if kconf is not None else 0.0
+            mean_conf = float(np.mean(kconf)) if (kconf is not None and not pose_missing) else 0.0
+            if pose_missing and det_conf is not None:
+                mean_conf = float(det_conf)
             if box_id is not None:
                 person_id = str(int(box_id))
             else:
-                key = np.concatenate([bbox, kpts.flatten()])
+                key = np.concatenate([bbox_arr, kpts.flatten()])
                 key = np.round(key, 1)
                 digest = hashlib.sha1(key.tobytes()).hexdigest()[:16]
                 person_id = digest
@@ -1113,6 +1203,9 @@ class AIDetector:
                     "face_bbox": face_bbox_coords,
                     "face_confidence": face_conf_score,
                     "head_tilt": float(head_tilt),
+                    "detector_bbox": bbox_arr[:4].tolist() if det_bbox is not None else None,
+                    "detector_confidence": float(det_conf) if det_conf is not None else None,
+                    "pose_available": not pose_missing,
                     "eyes": {
                         "left": left_eye_coords,
                         "right": right_eye_coords,
