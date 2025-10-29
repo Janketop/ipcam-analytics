@@ -291,6 +291,9 @@ class AIDetector:
         self.detect_person = detect_person
         self.detect_car = detect_car
         self.capture_entry_time = capture_entry_time
+        self.enable_phone_detection = settings.enable_phone_detection
+        self.enable_activity_detection = settings.enable_activity_detection
+        self.requires_pose = self.enable_phone_detection or self.enable_activity_detection
 
         det_weights = settings.yolo_det_model
         pose_weights = settings.yolo_pose_model
@@ -298,7 +301,7 @@ class AIDetector:
         self.device = resolve_device(self.device_preference, settings.cuda_visible_devices)
 
         self.det = YOLO(det_weights)
-        self.pose = YOLO(pose_weights)
+        self.pose = YOLO(pose_weights) if self.requires_pose else None
         self.face_conf = settings.yolo_face_conf
         self.face_detector_requested = (settings.face_detector_type or "yolo").strip().lower()
         self.face_device_preference = (settings.face_detector_device or "").strip() or None
@@ -315,7 +318,8 @@ class AIDetector:
         self.actual_device: Optional[str] = None
         try:
             self.det.to(self.device)
-            self.pose.to(self.device)
+            if self.pose is not None:
+                self.pose.to(self.device)
         except Exception as exc:
             self.device_error = str(exc).strip() or None
         finally:
@@ -689,6 +693,14 @@ class AIDetector:
     ) -> Tuple[bool, float, Any, Any, List[Dict[str, Any]], List[Dict[str, Any]]]:
         detect_person = self.detect_person
         detect_car = self.detect_car
+        enable_phone = bool(getattr(self, "enable_phone_detection", False) and detect_person)
+        enable_activity = bool(
+            getattr(self, "enable_activity_detection", False) and detect_person
+        )
+        requires_pose = bool(getattr(self, "requires_pose", enable_phone or enable_activity))
+        pose_runner = getattr(self, "pose", None)
+        if pose_runner is None:
+            requires_pose = False
 
         fg_mask = self.bg_subtractor.apply(frame) if detect_car else None
 
@@ -735,7 +747,7 @@ class AIDetector:
                 )
                 self._face_warning_shown = True
 
-        if self.phone_idx is None and det_res is not None and detect_person:
+        if enable_phone and self.phone_idx is None and det_res is not None and detect_person:
             names = getattr(self.det.model, "names", None) or getattr(self.det, "names", {})
             for k, v in names.items():
                 if v == PHONE_CLASS:
@@ -756,7 +768,7 @@ class AIDetector:
                 xyxy = b.xyxy[0].cpu().numpy()
                 label = self.det_names.get(cls_idx)
                 if (
-                    detect_person
+                    enable_phone
                     and self.phone_idx is not None
                     and cls_idx == self.phone_idx
                     and conf >= self.det_conf
@@ -770,14 +782,14 @@ class AIDetector:
                     person_detections.append({"bbox": xyxy, "conf": conf, "used": False})
 
         pose_res = None
-        if detect_person:
+        if detect_person and requires_pose and pose_runner is not None:
             pose_kwargs = {"imgsz": self.det_imgsz, "conf": self.pose_conf}
             if self.predict_device:
                 pose_kwargs["device"] = self.predict_device
-            pose_res = self.pose(frame, **pose_kwargs)[0]
+            pose_res = pose_runner(frame, **pose_kwargs)[0]
 
         num_pose_keypoints = 17
-        pose_model = getattr(self.pose, "model", None)
+        pose_model = getattr(pose_runner, "model", None)
         pose_inner_model = getattr(pose_model, "model", None)
         pose_kpt_shape = getattr(pose_inner_model, "kpt_shape", None)
         if isinstance(pose_kpt_shape, (list, tuple)) and pose_kpt_shape:
@@ -1093,44 +1105,56 @@ class AIDetector:
             head_center = np.mean(head_points, axis=0) if head_points else None
 
             pose_heuristic_score = 0.0
-            if not pose_missing:
-                for phone in phones:
-                    near_hand = False
-                    if wrists:
-                        dists = [np.linalg.norm(phone["center"] - wrist) for wrist in wrists]
-                        if dists:
-                            rel = min(dists) / bbox_h
-                            near_hand = rel <= self.phone_hand_dist_ratio
-
-                    near_head = False
-                    if head_center is not None:
-                        rel_head = np.linalg.norm(phone["center"] - head_center) / bbox_h
-                        near_head = rel_head <= self.phone_head_dist_ratio
-
-                    score = 0.0
-                    if near_hand:
-                        score += 0.6
-                    if near_head:
-                        score += 0.2
-                    if head_tilt > 0.25:
-                        score += 0.1
-                    score += min(phone["conf"], 1.0) * 0.1
-
-                    if score >= self.phone_score_threshold:
-                        phone_usage = True
-                        best_conf = max(best_conf, score)
-
-                    if need_overlay and vis is not None:
-                        cx, cy = map(int, phone["center"])
-                        color = (0, 0, 255) if score >= self.phone_score_threshold else (0, 165, 255)
-                        cv2.circle(vis, (cx, cy), 6, color, -1)
+            if enable_phone:
+                if not pose_missing:
+                    for phone in phones:
+                        near_hand = False
                         if wrists:
-                            closest = min(wrists, key=lambda p: np.linalg.norm(phone["center"] - p))
-                            cv2.line(vis, (cx, cy), tuple(map(int, closest)), color, 2)
+                            dists = [np.linalg.norm(phone["center"] - wrist) for wrist in wrists]
+                            if dists:
+                                rel = min(dists) / bbox_h
+                                near_hand = rel <= self.phone_hand_dist_ratio
+
+                        near_head = False
                         if head_center is not None:
-                            cv2.line(vis, (cx, cy), tuple(map(int, head_center)), (200, 50, 200), 1)
-            else:
-                if need_overlay and vis is not None:
+                            rel_head = np.linalg.norm(phone["center"] - head_center) / bbox_h
+                            near_head = rel_head <= self.phone_head_dist_ratio
+
+                        score = 0.0
+                        if near_hand:
+                            score += 0.6
+                        if near_head:
+                            score += 0.2
+                        if head_tilt > 0.25:
+                            score += 0.1
+                        score += min(phone["conf"], 1.0) * 0.1
+
+                        if score >= self.phone_score_threshold:
+                            phone_usage = True
+                            best_conf = max(best_conf, score)
+
+                        if need_overlay and vis is not None:
+                            cx, cy = map(int, phone["center"])
+                            color = (
+                                (0, 0, 255)
+                                if score >= self.phone_score_threshold
+                                else (0, 165, 255)
+                            )
+                            cv2.circle(vis, (cx, cy), 6, color, -1)
+                            if wrists:
+                                closest = min(
+                                    wrists, key=lambda p: np.linalg.norm(phone["center"] - p)
+                                )
+                                cv2.line(vis, (cx, cy), tuple(map(int, closest)), color, 2)
+                            if head_center is not None:
+                                cv2.line(
+                                    vis,
+                                    (cx, cy),
+                                    tuple(map(int, head_center)),
+                                    (200, 50, 200),
+                                    1,
+                                )
+                elif need_overlay and vis is not None:
                     for phone in phones:
                         x1_p, y1_p, x2_p, y2_p = phone["bbox"]
                         cv2.rectangle(
@@ -1162,7 +1186,7 @@ class AIDetector:
                             p2 = tuple(map(int, kpts[j]))
                             cv2.line(vis, p1, p2, (255, 0, 0), 2)
 
-            if not phones and wrists:
+            if enable_phone and not phones and wrists:
                 wrist_head_rel = None
                 if head_center is not None:
                     wrist_head_rel = min(np.linalg.norm(head_center - wrist) for wrist in wrists) / bbox_h
@@ -1219,13 +1243,21 @@ class AIDetector:
                 }
             )
 
-        if detect_person and need_overlay and vis is not None:
+        if enable_phone and detect_person and need_overlay and vis is not None:
             for phone in phones:
                 x1, y1, x2, y2 = phone["bbox"]
                 cv2.rectangle(vis, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 255), 2)
-                cv2.putText(vis, f"PHONE {phone['conf']:.2f}", (int(x1), int(y1) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                cv2.putText(
+                    vis,
+                    f"PHONE {phone['conf']:.2f}",
+                    (int(x1), int(y1) - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 255),
+                    2,
+                )
 
-        if detect_person and phone_usage and need_overlay and vis is not None:
+        if enable_phone and detect_person and phone_usage and need_overlay and vis is not None:
             cv2.putText(vis, f"PHONE_USAGE ({best_conf:.2f})", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
         snapshot = None
