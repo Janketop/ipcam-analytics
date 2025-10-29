@@ -121,6 +121,7 @@ class Settings(BaseSettings):
     car_event_cooldown: float = Field(8.0, ge=1.0)
 
     plate_ocr_langs: str = Field("ru,en")
+    easyocr_model_dir: str = Field("backend/weights/easyocr")
 
     @property
     def postgres_dsn(self) -> str:
@@ -177,6 +178,12 @@ class Settings(BaseSettings):
     @property
     def face_training_base_weights_path(self) -> Path:
         return self.resolve_project_path(self.face_training_base_weights)
+
+    @property
+    def easyocr_model_dir_path(self) -> Path:
+        """Возвращает абсолютный путь до каталога с весами EasyOCR."""
+
+        return self.resolve_project_path(self.easyocr_model_dir)
 
     @property
     def cors_allow_origin_list(self) -> List[str]:
