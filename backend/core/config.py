@@ -86,6 +86,9 @@ class Settings(BaseSettings):
     yolo_face_model_url: Optional[str] = Field(
         "https://github.com/ultralytics/assets/releases/latest/download/yolo11n.pt"
     )
+    face_detector_type: str = Field("yolo")
+    face_detector_weights: Optional[str] = Field(None)
+    face_detector_device: Optional[str] = Field(None)
     yolo_image_size: int = Field(640, ge=32)
     yolo_face_conf: float = Field(0.35, ge=0.05)
 
@@ -129,13 +132,25 @@ class Settings(BaseSettings):
         return f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{database}"
 
     @property
-    def yolo_face_model_path(self) -> Path:
-        """Возвращает абсолютный путь до весов модели распознавания лиц."""
+    def face_detector_weights_path(self) -> Optional[Path]:
+        """Возвращает абсолютный путь до весов детектора лиц, если они заданы."""
 
-        raw_path = Path(self.yolo_face_model)
-        if raw_path.is_absolute():
-            return raw_path
-        return (_BACKEND_DIR / raw_path).resolve()
+        candidate = (self.face_detector_weights or self.yolo_face_model or "").strip()
+        if not candidate:
+            return None
+        path = Path(candidate)
+        if path.is_absolute():
+            return path
+        return (_BACKEND_DIR / path).resolve()
+
+    @property
+    def yolo_face_model_path(self) -> Path:
+        """Совместимый аксессор для старого названия пути до весов YOLO-детектора лиц."""
+
+        resolved = self.face_detector_weights_path
+        if resolved is None:
+            raise ValueError("Путь до весов детектора лиц не задан в настройках")
+        return resolved
 
     def resolve_project_path(self, raw_path: str | Path) -> Path:
         """Преобразует относительный путь в абсолютный относительно корня проекта."""
