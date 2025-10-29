@@ -36,9 +36,11 @@ if TYPE_CHECKING:
 PHONE_CLASS = "cell phone"
 
 # Динамически ищем веса на GitHub releases, но также оставляем резервные ссылки.
-_GITHUB_RELEASES_API = "https://api.github.com/repos/ultralytics/assets/releases"
+_GITHUB_RELEASES_API = "https://api.github.com/repos/YapaLab/yolo-face/releases"
 
 _DEFAULT_FACE_WEIGHT_URLS: tuple[str, ...] = (
+    "https://github.com/YapaLab/yolo-face/releases/latest/download/yolov11n-face.pt",
+    "https://github.com/YapaLab/yolo-face/releases/latest/download/yolov8n-face.pt",
     "https://github.com/ultralytics/assets/releases/latest/download/yolo11n.pt",
     "https://huggingface.co/ultralytics/yolo11/resolve/main/yolo11n.pt?download=1",
     "https://huggingface.co/ultralytics/yolov8/resolve/main/yolov8n.pt?download=1",
@@ -92,9 +94,9 @@ def _fetch_github_face_weight_urls() -> List[str]:
             name = str(asset.get("name") or "").lower()
             if not name.endswith(".pt"):
                 continue
-            if "yolo11n" not in name:
+            if "face" not in name:
                 continue
-            if any(suffix in name for suffix in ("pose", "seg", "cls", "face")):
+            if any(suffix in name for suffix in ("pose", "seg", "cls")):
                 continue
             download = asset.get("browser_download_url")
             if download:
