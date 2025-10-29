@@ -68,6 +68,8 @@ def test_recognizer_identifies_employee(session_factory):
     assert match is not None
     assert match.employee_name == "Alice"
     assert pytest.approx(match.distance, rel=1e-5) == 0.0
+    assert match.backend == "cpu"
+    assert match.metric == "euclidean"
 
     vec_b = np.zeros(dim, dtype=np.float32)
     with session_factory() as session:
@@ -90,3 +92,5 @@ def test_recognizer_identifies_employee(session_factory):
     match_b = recognizer.identify(vec_b)
     assert match_b is not None
     assert match_b.employee_name == "Bob"
+    assert match_b.backend == "cpu"
+    assert match_b.metric == "euclidean"
