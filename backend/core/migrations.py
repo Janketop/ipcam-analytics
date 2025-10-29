@@ -119,6 +119,59 @@ def run_startup_migrations(session_factory: SessionFactory) -> None:
         )
 
         try:
+            employee_columns = {
+                col["name"] for col in inspector.get_columns("employees")
+            }
+        except NoSuchTableError:
+            employee_columns = set()
+
+        if "account_id" not in employee_columns:
+            session.execute(
+                text(
+                    "ALTER TABLE employees ADD COLUMN IF NOT EXISTS account_id TEXT"
+                )
+            )
+            session.commit()
+            logger.info("Добавлена колонка employees.account_id")
+            employee_columns.add("account_id")
+
+        account_unique_exists = False
+        try:
+            unique_constraints = inspector.get_unique_constraints("employees")
+        except NotImplementedError:
+            unique_constraints = []
+
+        for constraint in unique_constraints:
+            if set(constraint.get("column_names", ())) == {"account_id"}:
+                account_unique_exists = True
+                break
+
+        if not account_unique_exists:
+            try:
+                employee_indexes = inspector.get_indexes("employees")
+            except NotImplementedError:
+                employee_indexes = []
+
+            for index in employee_indexes:
+                if index.get("unique") and index.get("column_names") == [
+                    "account_id"
+                ]:
+                    account_unique_exists = True
+                    break
+
+        if not account_unique_exists and "account_id" in employee_columns:
+            session.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS employees_account_id_idx "
+                    "ON employees(account_id) WHERE account_id IS NOT NULL"
+                )
+            )
+            session.commit()
+            logger.info(
+                "Добавлен уникальный индекс для employees.account_id",
+            )
+
+        try:
             face_sample_columns = {
                 col["name"] for col in inspector.get_columns("face_samples")
             }
