@@ -3,11 +3,35 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import shutil
 from pathlib import Path
 from typing import Iterable, Optional
 
-from backend.core.logger import logger
+
+def _setup_logger() -> logging.Logger:
+    """Возвращает логгер, пытаясь использовать общую конфигурацию приложения."""
+
+    try:
+        from backend.core.logger import logger as app_logger
+    except Exception as exc:  # pragma: no cover - зависит от окружения
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+        fallback_logger = logging.getLogger("ipcam.export")
+        fallback_logger.warning(
+            "Не удалось инициализировать стандартное логирование: %s. "
+            "Используется запасная конфигурация, пишущая только в консоль.",
+            exc,
+        )
+        return fallback_logger
+
+    return app_logger
+
+
+logger = _setup_logger()
 
 
 class ExportError(RuntimeError):
