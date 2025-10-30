@@ -23,7 +23,7 @@ RUN apt-get update \
 
 ENV PIP_DEFAULT_TIMEOUT=600 \
     PIP_RETRIES=10 \
-    PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu121
+    PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu124
 
 WORKDIR /app
 
@@ -70,6 +70,49 @@ if numpy.__version__ != expected:
         "Make sure the constraints are applied correctly."
     )
 PY
+# После установки Python-зависимостей переносим cuDNN 9 в системный путь,
+# чтобы onnxruntime-gpu мог подхватить libcudnn.so.9 во время запуска.
+RUN python3 - <<'PY'
+"""Копируем cuDNN (.so) из site-packages в системный путь для onnxruntime."""
+import pathlib
+import shutil
+import sys
+
+site_packages_dirs = [
+    pathlib.Path(p)
+    for p in sys.path
+    if p and "site-packages" in p and pathlib.Path(p).is_dir()
+]
+
+if not site_packages_dirs:
+    raise SystemExit("Не найдены каталоги site-packages для поиска libcudnn*.so")
+
+target_dir = pathlib.Path("/usr/lib/x86_64-linux-gnu")
+target_dir.mkdir(parents=True, exist_ok=True)
+
+all_libs = []
+for base in site_packages_dirs:
+    all_libs.extend(sorted(base.rglob("libcudnn*.so*")))
+
+preferred = [p for p in all_libs if ".so.9" in p.name or p.name.endswith(".so")]
+selected = preferred or all_libs
+
+if not selected:
+    raise SystemExit("Не найдено файлов libcudnn*.so для копирования")
+
+copied = []
+for so_path in selected:
+    dest = target_dir / so_path.name
+    if dest.exists():
+        dest.unlink()
+    shutil.copy2(so_path, dest)
+    dest.chmod(0o755)
+    copied.append(dest.name)
+
+print("Скопированы библиотеки cuDNN:", ", ".join(sorted(set(copied))))
+PY
+
+RUN ldconfig
 
 RUN set -eux; \
     python3 -m pip uninstall -y opencv-python || true; \
