@@ -28,6 +28,7 @@ except Exception:  # pragma: no cover - mediapipe не является обяз
 
 from backend.core.config import settings
 from backend.core.logger import logger
+from backend.services.onnx_inference import OnnxPoseEstimator, OnnxYoloDetector
 from backend.services.snapshots import load_face_cascade, prepare_snapshot
 
 if TYPE_CHECKING:
@@ -302,9 +303,21 @@ class AIDetector:
         pose_weights = settings.yolo_pose_model
         self.device_preference = settings.yolo_device
         self.device = resolve_device(self.device_preference, settings.cuda_visible_devices)
+        self.det_backend = "onnx" if str(det_weights).lower().endswith(".onnx") else "yolo"
+        self.det = None
+        self.pose = None
 
-        self.det = YOLO(det_weights)
-        self.pose = YOLO(pose_weights) if self.requires_pose else None
+        if self.det_backend == "onnx":
+            self.det = OnnxYoloDetector(det_weights, class_names=settings.onnx_det_class_names)
+        else:
+            self.det = YOLO(det_weights)
+
+        if self.requires_pose:
+            if str(pose_weights).lower().endswith(".onnx"):
+                self.pose = OnnxPoseEstimator(pose_weights, kpt_shape=settings.onnx_pose_kpt_shape)
+            else:
+                self.pose = YOLO(pose_weights)
+
         self.face_conf = settings.yolo_face_conf
         self.face_detector_requested = (settings.face_detector_type or "yolo").strip().lower()
         self.face_device_preference = (settings.face_detector_device or "").strip() or None
@@ -319,23 +332,32 @@ class AIDetector:
 
         self.device_error: Optional[str] = None
         self.actual_device: Optional[str] = None
-        try:
-            self.det.to(self.device)
-            if self.pose is not None:
-                self.pose.to(self.device)
-        except Exception as exc:
-            self.device_error = str(exc).strip() or None
-        finally:
-            det_model = getattr(self.det, "model", None)
-            model_device = getattr(det_model, "device", None)
-            if model_device is not None:
-                self.actual_device = str(model_device)
-            else:
-                self.actual_device = str(self.device)
+        runners = [self.det, self.pose]
+        for runner in runners:
+            if runner is None or not hasattr(runner, "to"):
+                continue
+            try:
+                runner.to(self.device)
+            except Exception as exc:
+                if runner is self.det:
+                    self.device_error = str(exc).strip() or None
+
+        det_model = getattr(self.det, "model", None)
+        model_device = getattr(det_model, "device", None)
+        if model_device is not None:
+            self.actual_device = str(model_device)
+        elif self.det_backend == "onnx":
+            providers = settings.onnx_providers
+            self.actual_device = ",".join(providers)
+        else:
+            self.actual_device = str(self.device)
 
         self._initialize_face_detector()
 
-        self.predict_device = None if self.device in {"cpu", "auto"} else self.device
+        if self.det_backend == "onnx":
+            self.predict_device = None
+        else:
+            self.predict_device = None if self.device in {"cpu", "auto"} else self.device
 
         self.det_imgsz = settings.yolo_image_size
         self.det_conf = settings.phone_det_conf
@@ -349,8 +371,13 @@ class AIDetector:
         self.pose_tilt_threshold = settings.pose_tilt_threshold
         self.score_smoothing = settings.phone_score_smoothing
 
-        names_map = getattr(self.det.model, "names", None) or getattr(self.det, "names", {})
-        self.det_names = {int(k): v for k, v in names_map.items()} if isinstance(names_map, dict) else {}
+        names_map = getattr(self.det, "names", None) or getattr(getattr(self.det, "model", None), "names", None)
+        if isinstance(names_map, dict):
+            self.det_names = {int(k): v for k, v in names_map.items()}
+        elif isinstance(names_map, (list, tuple)):
+            self.det_names = {idx: str(name) for idx, name in enumerate(names_map)}
+        else:
+            self.det_names = {idx: str(name) for idx, name in enumerate(settings.onnx_det_class_names)}
         self.car_class_ids = {idx for idx, name in self.det_names.items() if name in {"car", "truck", "bus"}}
         self.car_conf_threshold = settings.car_det_conf
         self.min_car_fg_ratio = settings.car_moving_fg_ratio
@@ -401,40 +428,53 @@ class AIDetector:
                     self.face_detector = None
                     continue
 
-            if kind in {"yolo", "yolov8", "yolov8-face"}:
+            if kind in {"onnx", "yolo", "yolov8", "yolov8-face"}:
                 face_weights = _ensure_face_weights(allow_missing=True)
                 if not face_weights:
                     continue
-                try:
-                    model = YOLO(face_weights)
-                except Exception:
-                    logger.exception(
-                        "[%s] Не удалось инициализировать YOLO-детектор лиц по весам %s",
+                if str(face_weights).lower().endswith(".onnx"):
+                    self.face_detector = OnnxYoloDetector(
+                        face_weights, class_names=settings.onnx_face_class_names
+                    )
+                    self.face_detector_kind = "onnx"
+                    self.face_predict_device = None
+                    logger.info(
+                        "[%s] Активирован ONNX-детектор лиц (%s)",
                         self.camera_name,
                         face_weights,
                     )
-                    self.face_detector = None
-                    continue
-                try:
-                    model.to(self.face_device)
-                except Exception:
-                    logger.exception(
-                        "[%s] Ошибка переноса YOLO-детектора лиц на устройство %s",
-                        self.camera_name,
-                        self.face_device,
+                    return
+                if kind in {"yolo", "yolov8", "yolov8-face"}:
+                    try:
+                        model = YOLO(face_weights)
+                    except Exception:
+                        logger.exception(
+                            "[%s] Не удалось инициализировать YOLO-детектор лиц по весам %s",
+                            self.camera_name,
+                            face_weights,
+                        )
+                        self.face_detector = None
+                        continue
+                    try:
+                        model.to(self.face_device)
+                    except Exception:
+                        logger.exception(
+                            "[%s] Ошибка переноса YOLO-детектора лиц на устройство %s",
+                            self.camera_name,
+                            self.face_device,
+                        )
+                        self.face_device = self.device
+                    self.face_predict_device = (
+                        None if self.face_device in {"cpu", "auto"} else self.face_device
                     )
-                    self.face_device = self.device
-                self.face_predict_device = (
-                    None if self.face_device in {"cpu", "auto"} else self.face_device
-                )
-                self.face_detector = model
-                self.face_detector_kind = "yolo"
-                logger.info(
-                    "[%s] Активирован YOLO-детектор лиц (%s)",
-                    self.camera_name,
-                    face_weights,
-                )
-                return
+                    self.face_detector = model
+                    self.face_detector_kind = "yolo"
+                    logger.info(
+                        "[%s] Активирован YOLO-детектор лиц (%s)",
+                        self.camera_name,
+                        face_weights,
+                    )
+                    return
 
             if kind not in {"mediapipe", "yolo", "yolov8", "yolov8-face"}:
                 logger.warning(
@@ -729,9 +769,9 @@ class AIDetector:
 
         face_detections: List[Dict[str, Any]] = []
         if detect_person and self.face_detector is not None:
-            if self.face_detector_kind == "yolo":
+            if self.face_detector_kind in {"yolo", "onnx"}:
                 face_kwargs = {"imgsz": self.det_imgsz, "conf": self.face_conf}
-                if self.face_predict_device:
+                if self.face_predict_device and self.face_detector_kind == "yolo":
                     face_kwargs["device"] = self.face_predict_device
                 try:
                     face_results = self.face_detector(frame, **face_kwargs)
@@ -742,9 +782,10 @@ class AIDetector:
                 if boxes is not None:
                     for b in boxes:
                         try:
-                            xyxy = b.xyxy[0].cpu().numpy()
+                            tensor = b.xyxy[0]
+                            xyxy = tensor.cpu().numpy() if hasattr(tensor, "cpu") else np.asarray(tensor)
                         except Exception:
-                            xyxy = np.asarray(b.xyxy[0])
+                            xyxy = np.asarray(getattr(b, "xyxy", [np.zeros(4, dtype=np.float32)])[0])
                         conf = float(b.conf[0]) if getattr(b, "conf", None) is not None else 0.0
                         face_detections.append({"bbox": xyxy, "conf": conf, "used": False})
             elif self.face_detector_kind == "mediapipe":
@@ -764,8 +805,7 @@ class AIDetector:
                 self._face_warning_shown = True
 
         if enable_phone and self.phone_idx is None and det_res is not None and detect_person:
-            names = getattr(self.det.model, "names", None) or getattr(self.det, "names", {})
-            for k, v in names.items():
+            for k, v in self.det_names.items():
                 if v == PHONE_CLASS:
                     self.phone_idx = int(k)
                     break
