@@ -126,6 +126,8 @@ class IngestWorker(Thread):
         self._face_sample_model: Any = None
         self._face_sample_import_failed = False
 
+        self.best_snapshot_by_employee: dict[int, dict[str, Any]] = {}
+
     def update_flags(
         self,
         *,
@@ -344,6 +346,130 @@ class IngestWorker(Thread):
         metrics["score"] = float(score)
         return float(score)
 
+    def _normalize_employee_id(self, value: object) -> Optional[int]:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _get_candidate_employee_id(self, candidate: dict[str, Any]) -> Optional[int]:
+        metrics = candidate.get("metrics") or {}
+        raw_metrics = metrics.get("raw") or {}
+        employee_id_raw = raw_metrics.get("employee_id")
+        return self._normalize_employee_id(employee_id_raw)
+
+    def _update_best_snapshot_for_candidate(self, candidate: dict[str, Any]) -> None:
+        employee_id = self._get_candidate_employee_id(candidate)
+        if employee_id is None:
+            return
+
+        score_value = candidate.get("score")
+        if score_value is None:
+            score_value = self._score_snapshot_candidate(candidate)
+
+        try:
+            score = float(score_value)
+        except (TypeError, ValueError):
+            score = 0.0
+
+        captured_at = candidate.get("captured_at")
+        captured_monotonic = (
+            float(captured_at) if isinstance(captured_at, (int, float)) else None
+        )
+
+        current_best = self.best_snapshot_by_employee.get(employee_id)
+        current_score = -math.inf
+        if current_best:
+            try:
+                current_score = float(current_best.get("score", -math.inf))
+            except (TypeError, ValueError):
+                current_score = -math.inf
+
+        if score > current_score:
+            self.best_snapshot_by_employee[employee_id] = {
+                "candidate": candidate,
+                "score": score,
+                "captured_at": captured_monotonic,
+            }
+
+    def _recompute_best_snapshot_for_employee(self, employee_id: int) -> None:
+        best_candidate = None
+        best_score = -math.inf
+        best_captured: Optional[float] = None
+
+        for candidate in self.snapshot_candidates:
+            cand_employee = self._get_candidate_employee_id(candidate)
+            if cand_employee != employee_id:
+                continue
+
+            score_value = candidate.get("score")
+            if score_value is None:
+                score_value = self._score_snapshot_candidate(candidate)
+
+            try:
+                score = float(score_value)
+            except (TypeError, ValueError):
+                score = 0.0
+
+            if score > best_score:
+                best_score = score
+                best_candidate = candidate
+                captured_at = candidate.get("captured_at")
+                best_captured = (
+                    float(captured_at) if isinstance(captured_at, (int, float)) else None
+                )
+
+        if best_candidate is not None:
+            self.best_snapshot_by_employee[employee_id] = {
+                "candidate": best_candidate,
+                "score": best_score,
+                "captured_at": best_captured,
+            }
+        else:
+            self.best_snapshot_by_employee.pop(employee_id, None)
+
+    def _remove_candidate_from_best(self, candidate: dict[str, Any]) -> None:
+        to_recompute: list[int] = []
+        for employee_id, data in list(self.best_snapshot_by_employee.items()):
+            if data.get("candidate") is candidate:
+                to_recompute.append(employee_id)
+
+        for employee_id in to_recompute:
+            self.best_snapshot_by_employee.pop(employee_id, None)
+            self._recompute_best_snapshot_for_employee(employee_id)
+
+    def _handle_candidate_employee_change(
+        self,
+        candidate: dict[str, Any],
+        previous_employee_id: Optional[int],
+        new_employee_id: Optional[int],
+    ) -> None:
+        if (
+            previous_employee_id is not None
+            and previous_employee_id != new_employee_id
+        ):
+            entry = self.best_snapshot_by_employee.get(previous_employee_id)
+            if entry and entry.get("candidate") is candidate:
+                self.best_snapshot_by_employee.pop(previous_employee_id, None)
+                self._recompute_best_snapshot_for_employee(previous_employee_id)
+
+    def _get_best_snapshot_image_for_employee(self, employee_id: int) -> Optional[np.ndarray]:
+        entry = self.best_snapshot_by_employee.get(employee_id)
+        if not entry:
+            return None
+
+        candidate = entry.get("candidate")
+        if not isinstance(candidate, dict):
+            return None
+
+        frame = candidate.get("frame")
+        if frame is None:
+            return None
+
+        return prepare_snapshot(frame, self.detector.face_blur, self.detector.face_cascade)
+
     def _update_snapshot_candidate_metrics(
         self,
         candidate: Optional[dict[str, Any]],
@@ -363,6 +489,7 @@ class IngestWorker(Thread):
         frame_area = float(max(width * height, 1))
         metrics = candidate.setdefault("metrics", {})
         raw_metrics = metrics.setdefault("raw", {})
+        previous_employee_id = self._normalize_employee_id(raw_metrics.get("employee_id"))
         normalized_metrics: dict[str, Optional[float]] = {}
 
         sharpness = float(candidate.get("sharpness", 0.0) or 0.0)
@@ -370,6 +497,7 @@ class IngestWorker(Thread):
 
         selected_person = None
         best_face_score = -math.inf
+        selected_employee_id = None
         for person in people or []:
             if not isinstance(person, dict):
                 continue
@@ -385,6 +513,18 @@ class IngestWorker(Thread):
             if score > best_face_score:
                 best_face_score = score
                 selected_person = person
+                employee_data = person.get("employee") if isinstance(person, dict) else None
+                employee_info = employee_data if isinstance(employee_data, dict) else None
+                if isinstance(employee_info, dict):
+                    employee_id_raw = employee_info.get("id")
+                    try:
+                        selected_employee_id = (
+                            int(employee_id_raw) if employee_id_raw is not None else None
+                        )
+                    except (TypeError, ValueError):
+                        selected_employee_id = None
+                else:
+                    selected_employee_id = None
 
         face_area_ratio = None
         face_center_score = None
@@ -482,10 +622,16 @@ class IngestWorker(Thread):
                 "selected_person_id": (
                     selected_person.get("id") if isinstance(selected_person, dict) else None
                 ),
+                "employee_id": selected_employee_id,
             }
         )
 
         self._score_snapshot_candidate(candidate)
+        current_employee_id = self._normalize_employee_id(selected_employee_id)
+        self._handle_candidate_employee_change(
+            candidate, previous_employee_id, current_employee_id
+        )
+        self._update_best_snapshot_for_candidate(candidate)
 
     def _select_best_snapshot_candidate(
         self, since_monotonic: Optional[float] = None
@@ -549,7 +695,9 @@ class IngestWorker(Thread):
             if not isinstance(captured_at, (int, float)):
                 break
             if float(captured_at) <= before_or_equal:
-                self.snapshot_candidates.popleft()
+                removed = self.snapshot_candidates.popleft()
+                if isinstance(removed, dict):
+                    self._remove_candidate_from_best(removed)
             else:
                 break
 
@@ -667,6 +815,7 @@ class IngestWorker(Thread):
             self._next_allowed_process_monotonic = None
             self._last_snapshot_capture_monotonic = None
             self.snapshot_candidates.clear()
+            self.best_snapshot_by_employee.clear()
             try:
                 if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -1004,12 +1153,16 @@ class IngestWorker(Thread):
                         presence_meta = {
                             key: value for key, value in presence_meta.items() if value is not None
                         }
+                        employee_snapshot_img = self._get_best_snapshot_image_for_employee(emp_id)
+                        event_snapshot = (
+                            employee_snapshot_img if employee_snapshot_img is not None else snapshot_img
+                        )
                         events_to_store.append(
                             {
                                 "ts": now,
                                 "type": "EMPLOYEE_PRESENT",
                                 "confidence": max(0.0, 1.0 - float(distance_val)),
-                                "snapshot": snapshot_img,
+                                "snapshot": event_snapshot,
                                 "meta": presence_meta,
                                 "kind": "employee",
                             }
@@ -1094,6 +1247,7 @@ class IngestWorker(Thread):
                         session.commit()
                     if self.snapshot_candidates:
                         self.snapshot_candidates.clear()
+                        self.best_snapshot_by_employee.clear()
                 for stored in persisted_events:
                     logger.info(
                         "[%s] Зафиксировано событие %s (уверенность %.2f, данные %s)",
