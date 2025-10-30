@@ -3,6 +3,8 @@ import types
 
 import numpy as np
 
+from backend.services.onnx_inference import OnnxBox, OnnxDetectionResult
+
 
 def _make_bg_subtractor():
     return types.SimpleNamespace(apply=lambda frame: np.zeros(frame.shape[:2], dtype=np.uint8))
@@ -30,31 +32,6 @@ _cv2_stub = types.SimpleNamespace(
 sys.modules.setdefault("cv2", _cv2_stub)
 
 from backend.services.ai_detector import AIDetector
-
-
-class _MockTensor:
-    def __init__(self, data):
-        self._arr = np.array(data, dtype=np.float32)
-
-    def cpu(self):
-        return self
-
-    def numpy(self):
-        return self._arr
-
-
-class _MockBox:
-    def __init__(self, bbox, cls_idx, conf):
-        self.cls = [cls_idx]
-        self.conf = [conf]
-        self.xyxy = [_MockTensor(bbox)]
-
-
-class _MockResult:
-    def __init__(self, boxes):
-        self.boxes = boxes
-
-
 class _MockPoseResult:
     boxes = None
     keypoints = None
@@ -62,7 +39,8 @@ class _MockPoseResult:
 
 class _DummyDetector:
     def __init__(self, boxes, names):
-        self._result = _MockResult(boxes)
+        onnx_boxes = [OnnxBox(bbox, cls_idx, conf) for bbox, cls_idx, conf in boxes]
+        self._result = OnnxDetectionResult(onnx_boxes)
         self.model = types.SimpleNamespace(names=names)
         self.names = names
 
@@ -122,8 +100,9 @@ def _create_detector(person_bbox, conf=0.9):
     detector.face_device = "cpu"
     detector.face_detector_requested = "none"
     detector.face_device_preference = None
+    detector.det_backend = "onnx"
     detector.det_names = {0: "person", 1: "cell phone"}
-    detector.det = _DummyDetector([_MockBox(person_bbox, 0, conf)], detector.det_names)
+    detector.det = _DummyDetector([(person_bbox, 0, conf)], detector.det_names)
     detector.pose = _DummyPose((17, 3))
     return detector
 
