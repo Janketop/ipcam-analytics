@@ -53,7 +53,18 @@ docker compose up --build
 - `ONNX_DET_MODEL`, `ONNX_POSE_MODEL`, `ONNX_FACE_MODEL`, `ONNX_FACE_CLASSIFIER_MODEL` — относительные или абсолютные пути до экспортированных ONNX-весов (детектор людей/телефонов, позовый детектор, детектор лиц и классификатор/эмбеддинги). Относительные пути резолвятся от корня репозитория, поэтому можно хранить модели внутри `backend/models/weights`.
 - `ONNX_GRAPH_OPTIMIZATIONS` — список включённых оптимизаций графа ORT (`basic`, `extended`, `all` и т.д.), задаётся через запятую. Параметр передаётся в инициализацию `onnxruntime-gpu`, что позволяет ускорять инференс без пересборки контейнера.
 
-Экспорт моделей в ONNX делается стандартными инструментами Ultralytics/YOLO:
+Экспорт моделей в ONNX можно выполнить двумя способами:
+
+1. Через встроенную утилиту репозитория (работает с любыми `.pt`-файлами YOLO):
+
+```bash
+python -m backend.utils.export_models_to_onnx \
+  backend/models/weights/yolov8n.pt \
+  backend/models/weights/yolov8n-pose.pt \
+  --output-dir backend/models/weights --simplify
+```
+
+2. Непосредственно командами Ultralytics/YOLO:
 ```bash
 # экспортируйте весы детектора людей/телефонов
 yolo export model=yolov8n.pt format=onnx device=cpu simplify=True
