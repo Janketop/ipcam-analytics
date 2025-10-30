@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 import os
@@ -34,7 +35,14 @@ def prepare_snapshot(img_bgr, face_blur: bool, face_cascade: Optional[cv2.Cascad
     return snap
 
 
-def save_snapshot(img_bgr, ts: datetime, camera_name: str, event_type: str = "event") -> str:
+def save_snapshot(
+    img_bgr,
+    ts: datetime,
+    camera_name: str,
+    event_type: str = "event",
+    *,
+    dataset_dir: Optional[Path] = DATASET_PHONE_USAGE_DIR,
+) -> str:
     """Сохраняет изображение на диск и возвращает относительный URL."""
     if img_bgr is None:
         return ""
@@ -43,18 +51,19 @@ def save_snapshot(img_bgr, ts: datetime, camera_name: str, event_type: str = "ev
     success = cv2.imwrite(str(path), img_bgr)
     if success:
         logger.info("Снимок сохранён: %s", path)
-        dataset_path = DATASET_PHONE_USAGE_DIR / filename
-        try:
-            copy2(path, dataset_path)
-        except Exception as exc:
-            logger.warning(
-                "Не удалось скопировать снимок %s в датасет по пути %s: %s",
-                filename,
-                dataset_path,
-                exc,
-            )
-        else:
-            logger.debug("Снимок продублирован в датасет: %s", dataset_path)
+        if dataset_dir is not None:
+            dataset_path = dataset_dir / filename
+            try:
+                copy2(path, dataset_path)
+            except Exception as exc:
+                logger.warning(
+                    "Не удалось скопировать снимок %s в датасет по пути %s: %s",
+                    filename,
+                    dataset_path,
+                    exc,
+                )
+            else:
+                logger.debug("Снимок продублирован в датасет: %s", dataset_path)
     else:
         logger.warning("Не удалось сохранить снимок %s", path)
     return f"/static/snaps/{filename}"
