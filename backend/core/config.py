@@ -3,11 +3,13 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Literal, Optional, Set, Tuple
+from typing import Any, List, Literal, Optional, Set, Tuple
 from urllib.parse import quote_plus
 
-from pydantic import Field
+from pydantic import Field, field_validator
+from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings.sources import EnvSettingsSource
 
 _CONFIG_DIR = Path(__file__).resolve().parent
 _BACKEND_DIR = _CONFIG_DIR.parent
@@ -35,6 +37,24 @@ def _split_env_list(raw: str) -> List[str]:
     return [item.strip() for item in normalized.split(",") if item.strip()]
 
 
+class _LenientEnvSettingsSource(EnvSettingsSource):
+    """Обработчик окружения, который допускает строковый список оптимизаций."""
+
+    def prepare_field_value(
+        self,
+        field_name: str,
+        field: FieldInfo,
+        value: Any,
+        value_is_complex: bool,
+    ) -> Any:
+        try:
+            return super().prepare_field_value(field_name, field, value, value_is_complex)
+        except ValueError:
+            if field_name == "onnx_graph_optimizations" and isinstance(value, str):
+                return tuple(_split_env_list(value))
+            raise
+
+
 class Settings(BaseSettings):
     """Глобальные настройки сервиса, считываемые из .env и окружения."""
 
@@ -44,6 +64,22 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
+    ):
+        return (
+            init_settings,
+            _LenientEnvSettingsSource(settings_cls),
+            dotenv_settings,
+            file_secret_settings,
+        )
 
     app_title: str = Field("IPCam Analytics (RU)")
 
@@ -196,6 +232,24 @@ class Settings(BaseSettings):
         if raw_path is None:
             return None
         return self.resolve_project_path(raw_path)
+
+    @field_validator("onnx_graph_optimizations", mode="before")
+    @classmethod
+    def _parse_onnx_graph_optimizations(cls, value: object) -> Tuple[str, ...] | object:
+        """Допускает передачу списка оптимизаций через строку окружения.
+
+        Pydantic ожидает JSON-представление для кортежей, из-за чего строка
+        вида ``"basic,extended"`` вызывает исключение при загрузке настроек
+        (именно так значение задано в ``.env.example``). Валидатор приводит
+        строку к формату ``Tuple[str, ...]`` с учётом разделителей, используемых
+        в ``_split_env_list``.
+        """
+
+        if isinstance(value, str):
+            return tuple(_split_env_list(value))
+        if isinstance(value, (list, tuple)):
+            return tuple(value)
+        return value
 
     def detector_weights_path(self) -> Path:
         """Путь до весов основного детектора людей/объектов."""
