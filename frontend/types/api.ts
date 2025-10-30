@@ -9,6 +9,8 @@ export type EventMeta = {
   head_motion?: number | null;
   movement_score?: number | null;
   person_id?: string | null;
+  employeeId?: number | null;
+  employeeName?: string | null;
 };
 
 export type EventItem = {
