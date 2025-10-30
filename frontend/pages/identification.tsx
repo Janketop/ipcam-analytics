@@ -10,6 +10,14 @@ const formatDateTime = (value?: string | null) => {
   return date.toLocaleString();
 };
 
+const formatSnapshotCount = (value: number) => {
+  const mod10 = value % 10;
+  const mod100 = value % 100;
+  if (mod10 === 1 && mod100 !== 11) return 'снимок';
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return 'снимка';
+  return 'снимков';
+};
+
 const IdentificationPage = () => {
   const { normalizedApiBase, buildAbsoluteUrl } = useApiBase();
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -28,6 +36,10 @@ const IdentificationPage = () => {
 
   const MAX_FILE_SIZE = 5 * 1024 * 1024;
   const allowedMimeTypes = useMemo(() => new Set(['image/jpeg', 'image/png', 'image/jpg']), []);
+  const autoCollectedCount = useMemo(
+    () => samples.filter(sample => !sample.eventId).length,
+    [samples]
+  );
 
   const fetchEmployees = useCallback(async () => {
     const response = await fetch(`${normalizedApiBase}/employees`);
@@ -330,6 +342,24 @@ const IdentificationPage = () => {
 
         <section
           style={{
+            background: '#f1f5f9',
+            padding: 20,
+            borderRadius: 16,
+            border: '1px solid #e2e8f0',
+            display: 'grid',
+            gap: 8,
+          }}
+        >
+          <h2 style={{ margin: 0, fontSize: 18 }}>Автоматически собранные лица</h2>
+          <p style={{ margin: 0, color: '#475569', lineHeight: 1.6 }}>
+            Ингест-воркер теперь фиксирует кадры без распознанных сотрудников. Такие карточки помечены
+            бейджем «Авто» в списке ниже и сразу попадают в очередь дообучения. Сейчас в очереди{' '}
+            <strong>{autoCollectedCount}</strong> {formatSnapshotCount(autoCollectedCount)}.
+          </p>
+        </section>
+
+        <section
+          style={{
             background: '#fff',
             padding: 24,
             borderRadius: 16,
@@ -509,6 +539,7 @@ const IdentificationPage = () => {
               {samples.map(sample => {
                 const imgUrl = buildAbsoluteUrl(sample.snapshotUrl) ?? sample.snapshotUrl;
                 const disabled = pendingSampleId === sample.id;
+                const isAutoCollected = !sample.eventId;
                 return (
                   <div
                     key={sample.id}
@@ -542,11 +573,32 @@ const IdentificationPage = () => {
                           Снимок недоступен
                         </div>
                       )}
+                      <span
+                        style={{
+                          position: 'absolute',
+                          top: 12,
+                          left: 12,
+                          background: isAutoCollected ? '#2563eb' : '#334155',
+                          color: '#fff',
+                          fontSize: 12,
+                          fontWeight: 700,
+                          letterSpacing: 0.4,
+                          textTransform: 'uppercase',
+                          padding: '6px 10px',
+                          borderRadius: 999,
+                          boxShadow: '0 8px 16px rgba(15,23,42,0.2)',
+                        }}
+                      >
+                        {isAutoCollected ? 'Авто' : 'Событие'}
+                      </span>
                     </div>
                     <div style={{ padding: '16px 16px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
                       <div style={{ display: 'grid', gap: 4, fontSize: 14, color: '#475569' }}>
                         <span><strong>Камера:</strong> {sample.camera ?? '—'}</span>
                         <span><strong>Ключ в кадре:</strong> {sample.candidateKey ?? 'не определён'}</span>
+                        <span>
+                          <strong>Источник:</strong> {isAutoCollected ? 'автособранный кадр' : 'событие системы'}
+                        </span>
                         <span><strong>Время:</strong> {formatDateTime(sample.capturedAt)}</span>
                       </div>
 
