@@ -1,6 +1,6 @@
-# Align torch packages with the CUDA 12.4 builds used for GPU acceleration.
-torch==2.9.0+cu124
-torchvision==0.24.0+cu124
+# Use CPU wheels that are available without access to the CUDA-specific package index.
+torch==2.9.0
+torchvision==0.24.0
 dlib==19.24.4
 numpy==1.26.4
 scikit-learn==1.5.2
