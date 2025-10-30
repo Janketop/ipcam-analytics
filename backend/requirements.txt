@@ -11,7 +11,6 @@ torch==2.3.1+cu121
 torchvision==0.18.1+cu121
 onnx==1.16.2
 onnxruntime-gpu==1.19.2
-onnxruntime-tools==1.8.0
 facenet-pytorch==2.5.3
 ultralytics==8.3.44
 numpy==1.26.4
