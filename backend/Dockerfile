@@ -70,6 +70,25 @@ if numpy.__version__ != expected:
         "Make sure the constraints are applied correctly."
     )
 PY
+# Torch тянет cuDNN 8.*, поэтому переустанавливаем пакет с cuDNN 9 без проверки
+# зависимостей, чтобы удовлетворить требования onnxruntime-gpu.
+RUN python3 -m pip install --no-cache-dir --no-deps --force-reinstall \
+    nvidia-cudnn-cu12==9.4.0.58
+
+RUN python3 - <<'PY'
+import pathlib
+import shutil
+import nvidia.cudnn
+
+cudnn_lib_dir = pathlib.Path(nvidia.cudnn.__file__).resolve().parent / 'lib'
+target_dir = pathlib.Path('/usr/lib/x86_64-linux-gnu')
+target_dir.mkdir(parents=True, exist_ok=True)
+
+for so_path in cudnn_lib_dir.glob('libcudnn*.so*'):
+    shutil.copy2(so_path, target_dir / so_path.name)
+PY
+
+RUN ldconfig
 
 RUN set -eux; \
     python3 -m pip uninstall -y opencv-python || true; \
