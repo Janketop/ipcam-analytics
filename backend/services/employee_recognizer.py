@@ -6,7 +6,6 @@ from threading import Lock
 from typing import Optional, Sequence, Union
 
 import numpy as np
-import torch
 from sqlalchemy import select
 
 from backend.core.config import settings
@@ -70,22 +69,19 @@ class EmployeeRecognizer:
         self.padding = 0.15
 
         logger.debug(
-            "Инициализирован распознаватель лиц (модель=%s, embedding_dim=%s, устройство=%s)",
+            "Инициализирован распознаватель лиц (модель=%s, embedding_dim=%s, провайдеры=%s)",
             self.encoding_model,
             self._model_metadata.get("embedding_dim"),
-            self._model_metadata.get("device"),
+            ", ".join(self._model_metadata.get("providers", ()))
+            if isinstance(self._model_metadata.get("providers"), (list, tuple))
+            else self._model_metadata.get("providers"),
         )
 
-        self._embeddings_cpu: Optional[np.ndarray] = None
-        self._embeddings_torch_cpu: Optional[torch.Tensor] = None
-        self._embeddings_gpu: Optional[torch.Tensor] = None
+        self._embeddings: Optional[np.ndarray] = None
         self._employee_ids: list[int] = []
         self._employee_names: list[str] = []
         self._embedding_dim: Optional[int] = None
         self._local_version = -1
-        self._preferred_device = (
-            torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-        )
 
         self.refresh_cache(force=True)
 
@@ -108,7 +104,7 @@ class EmployeeRecognizer:
 
     @property
     def has_samples(self) -> bool:
-        return bool(self._embeddings_torch_cpu is not None and self._employee_ids)
+        return bool(self._embeddings is not None and self._employee_ids)
 
     # --- Публичные методы ---------------------------------------------------
     def refresh_cache(self, *, force: bool = False) -> None:
@@ -189,9 +185,7 @@ class EmployeeRecognizer:
         if not vectors:
             if skipped:
                 logger.info("Не удалось загрузить эмбеддинги сотрудников (%s пропущено)", skipped)
-            self._embeddings_cpu = None
-            self._embeddings_torch_cpu = None
-            self._embeddings_gpu = None
+            self._embeddings = None
             self._employee_ids = []
             self._employee_names = []
             self._embedding_dim = None
@@ -199,22 +193,7 @@ class EmployeeRecognizer:
             return
 
         embedding_matrix = np.vstack(vectors).astype(np.float32, copy=False)
-        torch_cpu = torch.from_numpy(embedding_matrix)
-        self._embeddings_cpu = embedding_matrix
-        self._embeddings_torch_cpu = torch_cpu
-        backend = "cpu"
-        if self._preferred_device.type == "cuda":
-            try:
-                self._embeddings_gpu = torch_cpu.to(self._preferred_device)
-                backend = "cuda"
-            except RuntimeError:
-                logger.warning(
-                    "Не удалось перенести эмбеддинги сотрудников на GPU, работаем на CPU",
-                )
-                backend = "cpu"
-                self._embeddings_gpu = None
-        else:
-            self._embeddings_gpu = None
+        self._embeddings = embedding_matrix
         self._employee_ids = employee_ids
         self._employee_names = employee_names
         self._embedding_dim = int(embedding_matrix.shape[1])
@@ -228,9 +207,8 @@ class EmployeeRecognizer:
         if skipped:
             logger.debug("Пропущено %d эмбеддингов из-за ошибок", skipped)
         logger.debug(
-            "Эмбеддинги подготовлены для бэкэнда: %s (устройство=%s)",
-            backend,
-            self._preferred_device,
+            "Эмбеддинги подготовлены для бэкэнда numpy (размер=%s)",
+            embedding_matrix.shape,
         )
 
     def compute_embedding(
@@ -257,11 +235,7 @@ class EmployeeRecognizer:
 
         self.refresh_cache()
 
-        if (
-            self._embeddings_torch_cpu is None
-            or self._embedding_dim is None
-            or not self._employee_ids
-        ):
+        if self._embeddings is None or self._embedding_dim is None or not self._employee_ids:
             return None
 
         if isinstance(embedding, FaceEmbeddingResult):
@@ -278,26 +252,21 @@ class EmployeeRecognizer:
             )
             return None
 
-        backend = "cuda"
-        embeddings_tensor: torch.Tensor
-        if self._embeddings_gpu is not None and self._preferred_device.type == "cuda":
-            embeddings_tensor = self._embeddings_gpu
-        else:
-            backend = "cpu"
-            embeddings_tensor = self._embeddings_torch_cpu
-
         metric = "euclidean"
-        with torch.no_grad():
-            query = torch.from_numpy(vector)
-            if backend == "cuda":
-                query = query.to(self._preferred_device)
-            else:
-                query = query.to(embeddings_tensor.device)
-            diff = embeddings_tensor - query.unsqueeze(0)
-            distances = torch.linalg.norm(diff, dim=1)
-            best_distance_tensor, best_idx_tensor = torch.min(distances, dim=0)
+        embeddings_matrix = self._embeddings
+        diff = embeddings_matrix - vector[np.newaxis, :]
+        distances = np.linalg.norm(diff, axis=1)
+        if distances.size == 0:
+            return None
 
-        best_distance = float(best_distance_tensor.item())
+        if not np.isfinite(distances).all():
+            logger.debug("Получены нечисловые значения расстояний")
+            return None
+
+        best_idx = int(np.argmin(distances))
+        best_distance = float(distances[best_idx])
+        backend = "numpy"
+
         if best_distance > self.threshold:
             logger.debug(
                 "Лучший кандидат превышает порог: distance=%.4f, threshold=%.4f, backend=%s",
@@ -307,7 +276,6 @@ class EmployeeRecognizer:
             )
             return None
 
-        best_idx = int(best_idx_tensor.item())
         employee_id = self._employee_ids[best_idx]
         employee_name = self._employee_names[best_idx]
         logger.debug(
