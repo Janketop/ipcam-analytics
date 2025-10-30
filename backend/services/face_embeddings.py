@@ -2,16 +2,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
 import numpy as np
-from PIL import Image
 
 from backend.core.config import settings
 from backend.core.logger import logger
 from backend.core.paths import BACKEND_DIR, SNAPSHOT_DIR
+from backend.services import face_embeddings_onnx
 
 try:  # pragma: no cover - импорт может падать только в рантайме контейнера
     import face_recognition  # type: ignore
@@ -20,29 +19,6 @@ except Exception as exc:  # pragma: no cover - обработка отсутст
     _FACE_RECOGNITION_ERROR = exc
 else:  # pragma: no cover - выполняется только при успешном импорте
     _FACE_RECOGNITION_ERROR = None
-
-try:  # pragma: no cover - опциональная зависимость может отсутствовать в тестах
-    import torch
-    from torch import Tensor
-    from torchvision import transforms
-    from torchvision.transforms import InterpolationMode
-except Exception as exc:  # pragma: no cover - обработка отсутствия torch
-    torch = None  # type: ignore
-    Tensor = None  # type: ignore
-    transforms = None  # type: ignore
-    InterpolationMode = None  # type: ignore
-    _TORCH_IMPORT_ERROR = exc
-else:  # pragma: no cover - выполняется при успешном импорте torch
-    _TORCH_IMPORT_ERROR = None
-
-try:  # pragma: no cover - facenet_pytorch может отсутствовать в окружении
-    from facenet_pytorch import InceptionResnetV1, fixed_image_standardization
-except Exception as exc:  # pragma: no cover - обработка отсутствия facenet_pytorch
-    InceptionResnetV1 = None  # type: ignore
-    fixed_image_standardization = None  # type: ignore
-    _FACENET_IMPORT_ERROR = exc
-else:  # pragma: no cover - выполняется при успешном импорте facenet_pytorch
-    _FACENET_IMPORT_ERROR = None
 
 
 @dataclass(slots=True)
@@ -87,18 +63,16 @@ class _EmbeddingSpec:
     """Описание поддерживаемой модели для расчёта эмбеддингов."""
 
     canonical_name: str
-    pretrained_tag: str
     input_size: tuple[int, int]
     embedding_dim: int
 
 
-_DEFAULT_MODEL_KEY = "facenet_vggface2"
+_DEFAULT_MODEL_KEY = "arcface_insightface"
 
 _MODEL_SPECS: dict[str, _EmbeddingSpec] = {
-    "facenet_vggface2": _EmbeddingSpec(
-        canonical_name="facenet_vggface2",
-        pretrained_tag="vggface2",
-        input_size=(160, 160),
+    _DEFAULT_MODEL_KEY: _EmbeddingSpec(
+        canonical_name=_DEFAULT_MODEL_KEY,
+        input_size=(112, 112),
         embedding_dim=512,
     ),
 }
@@ -106,10 +80,9 @@ _MODEL_SPECS: dict[str, _EmbeddingSpec] = {
 _MODEL_ALIASES: dict[str, str] = {
     "": _DEFAULT_MODEL_KEY,
     _DEFAULT_MODEL_KEY: _DEFAULT_MODEL_KEY,
-    "vggface2": _DEFAULT_MODEL_KEY,
-    "inception_resnet_v1": _DEFAULT_MODEL_KEY,
-    "small": _DEFAULT_MODEL_KEY,
-    "large": _DEFAULT_MODEL_KEY,
+    "arcface": _DEFAULT_MODEL_KEY,
+    "insightface": _DEFAULT_MODEL_KEY,
+    "r100": _DEFAULT_MODEL_KEY,
 }
 
 
@@ -143,101 +116,16 @@ def _get_model_spec(name: Optional[str]) -> _EmbeddingSpec:
 
 
 def _embedding_backend_ready() -> bool:
-    if torch is None or transforms is None or Tensor is None:  # pragma: no cover - зависит от окружения
-        logger.error(
-            "PyTorch недоступен для расчёта эмбеддингов: %s",
-            _TORCH_IMPORT_ERROR,
-        )
-        return False
-
-    if InceptionResnetV1 is None or fixed_image_standardization is None:  # pragma: no cover
-        logger.error(
-            "Библиотека facenet-pytorch недоступна: %s",
-            _FACENET_IMPORT_ERROR,
-        )
-        return False
-
-    return True
+    return face_embeddings_onnx.backend_ready()
 
 
-@lru_cache(maxsize=1)
-def _get_device() -> Optional["torch.device"]:
-    if torch is None:  # pragma: no cover - отсутствие torch покрывается отдельно
-        return None
-
-    try:
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-            try:  # pragma: no branch - вспомогательное логирование
-                device_name = torch.cuda.get_device_name(device)  # type: ignore[arg-type]
-            except Exception:  # pragma: no cover - название устройства не критично
-                device_name = "CUDA"
-            logger.info(
-                "Модель эмбеддингов лиц будет выполняться на GPU (%s)",
-                device_name,
-            )
-            return device
-    except Exception:  # pragma: no cover - неожиданные ошибки CUDA
-        logger.exception("Не удалось инициализировать устройство CUDA, используется CPU")
-
-    logger.info("CUDA недоступна, расчёт эмбеддингов лиц выполняется на CPU")
-    return torch.device("cpu")
-
-
-@lru_cache(maxsize=None)
-def _load_embedding_model(model_key: str):
-    if not _embedding_backend_ready():
-        raise RuntimeError("Backend эмбеддингов лиц недоступен")
-
-    assert InceptionResnetV1 is not None  # для mypy
-
-    spec = _MODEL_SPECS[model_key]
-    model = InceptionResnetV1(pretrained=spec.pretrained_tag).eval()
-    device = _get_device()
-    if device is None:
-        raise RuntimeError("Не удалось определить устройство для модели эмбеддингов")
-
-    model = model.to(device)
-    for parameter in model.parameters():
-        parameter.requires_grad_(False)
-
-    return model
-
-
-@lru_cache(maxsize=None)
-def _get_transform(size: tuple[int, int]):
-    if not _embedding_backend_ready():
-        raise RuntimeError("Backend эмбеддингов лиц недоступен")
-
-    assert transforms is not None and fixed_image_standardization is not None
-
-    interpolation = (
-        InterpolationMode.BILINEAR if InterpolationMode is not None else None
-    )
-
-    steps = []
-    if interpolation is not None:
-        steps.append(transforms.Resize(size, interpolation=interpolation))
-    else:  # pragma: no cover - fallback только для сильно урезанного окружения
-        steps.append(transforms.Resize(size))
-
-    steps.extend(
-        [
-            transforms.ToTensor(),
-            fixed_image_standardization,
-        ]
-    )
-
-    return transforms.Compose(steps)
-
-
-def _prepare_face_tensor(
+def _run_embedding(
     image: np.ndarray,
     spec: _EmbeddingSpec,
     *,
     assume_bgr: bool,
-) -> Optional[Tensor]:
-    if not _embedding_backend_ready():  # pragma: no cover - логирование выполнено выше
+) -> Optional[np.ndarray]:
+    if not _embedding_backend_ready():
         return None
 
     if image is None or image.size == 0:
@@ -250,57 +138,25 @@ def _prepare_face_tensor(
         return None
 
     try:
-        pil_image = Image.fromarray(rgb)
-    except Exception:  # pragma: no cover - ошибки PIL встречаются редко
-        logger.exception("Не удалось создать PIL-изображение для подготовки лица")
+        vector = face_embeddings_onnx.compute_embedding(
+            rgb, input_size=spec.input_size
+        )
+    except Exception:
+        logger.exception("Ошибка при вычислении эмбеддинга лица ONNX-моделью")
         return None
 
-    try:
-        transform = _get_transform(spec.input_size)
-        tensor = transform(pil_image)
-    except Exception:  # pragma: no cover - ошибки препроцессинга редки
-        logger.exception("Ошибка при нормализации изображения лица для модели")
-        return None
-
-    return tensor
-
-
-def _run_embedding(face_tensor: Tensor, spec: _EmbeddingSpec) -> Optional[Tensor]:
-    if not _embedding_backend_ready():  # pragma: no cover - логирование выполнено выше
-        return None
-
-    model_key = spec.canonical_name
-    try:
-        model = _load_embedding_model(model_key)
-    except Exception:  # pragma: no cover - ошибки загрузки модели редки
-        logger.exception("Не удалось загрузить модель эмбеддингов лиц (%s)", model_key)
-        return None
-
-    device = _get_device()
-    if device is None:
-        return None
-
-    try:
-        batch = face_tensor.unsqueeze(0).to(device=device, dtype=torch.float32)
-        with torch.no_grad():
-            embedding = model(batch)
-    except Exception:  # pragma: no cover - ошибки выполнения модели редки
-        logger.exception("Ошибка при вычислении эмбеддинга лица моделью %s", model_key)
-        return None
-
-    return embedding.squeeze(0).detach().cpu()
+    return np.asarray(vector, dtype=np.float32)
 
 
 def _build_embedding_result(
-    tensor: Optional[Tensor],
+    vector: Optional[np.ndarray],
     spec: _EmbeddingSpec,
     *,
     location: Optional[tuple[int, int, int, int]],
 ) -> Optional[FaceEmbeddingResult]:
-    if tensor is None:
+    if vector is None or vector.size == 0:
         return None
 
-    vector = tensor.numpy().astype(np.float32, copy=False)
     return FaceEmbeddingResult(
         vector=np.array(vector, dtype=np.float32, copy=True),
         model=spec.canonical_name,
@@ -312,12 +168,12 @@ def get_embedding_metadata(name: Optional[str] = None) -> dict[str, object]:
     """Возвращает метаданные о поддерживаемой модели эмбеддингов."""
 
     spec = _get_model_spec(name)
-    device = _get_device()
     return {
         "model": spec.canonical_name,
         "input_size": spec.input_size,
         "embedding_dim": spec.embedding_dim,
-        "device": str(device) if device is not None else "unknown",
+        "providers": tuple(settings.onnx_providers),
+        "onnx_model": str(settings.face_recognition_onnx_model_path),
     }
 
 
@@ -441,8 +297,7 @@ def compute_face_embedding_from_array(
         logger.debug("Выделенный регион лица пуст")
         return None
 
-    face_tensor = _prepare_face_tensor(face_region, spec, assume_bgr=False)
-    embedding = _run_embedding(face_tensor, spec) if face_tensor is not None else None
+    embedding = _run_embedding(face_region, spec, assume_bgr=False)
     return _build_embedding_result(embedding, spec, location=location)
 
 
@@ -500,8 +355,7 @@ def compute_face_embedding_for_bbox(
     if roi is None or roi.size == 0:
         return None
 
-    face_tensor = _prepare_face_tensor(roi, spec, assume_bgr=True)
-    embedding = _run_embedding(face_tensor, spec) if face_tensor is not None else None
+    embedding = _run_embedding(roi, spec, assume_bgr=True)
     return _build_embedding_result(embedding, spec, location=None)
 
 
