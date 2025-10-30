@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Optional, Set, Tuple
+from typing import List, Literal, Optional, Set, Tuple
 from urllib.parse import quote_plus
 
 from pydantic import Field
@@ -82,9 +82,16 @@ class Settings(BaseSettings):
 
     yolo_device: str = Field("auto")
     cuda_visible_devices: Optional[str] = Field(None)
+    inference_backend: Literal["pt", "onnx"] = Field("onnx")
     yolo_det_model: str = Field("backend/models/weights/person_detector.onnx")
     yolo_pose_model: str = Field("backend/models/weights/pose_estimator.onnx")
     yolo_face_model: str = Field("backend/models/weights/face_detector.onnx")
+    onnx_det_model: str = Field("backend/models/weights/person_detector.onnx")
+    onnx_pose_model: str = Field("backend/models/weights/pose_estimator.onnx")
+    onnx_face_model: str = Field("backend/models/weights/face_detector.onnx")
+    onnx_face_classifier_model: str = Field(
+        "backend/models/weights/face_recognition_arcface_dummy.onnx"
+    )
     yolo_face_model_url: Optional[str] = Field(
         "https://github.com/YapaLab/yolo-face/releases/latest/download/yolov11m-face.pt"
     )
@@ -103,6 +110,7 @@ class Settings(BaseSettings):
         "bus",
     ))
     onnx_pose_kpt_shape: Tuple[int, int] = Field((17, 3))
+    onnx_graph_optimizations: Tuple[str, ...] = Field(("basic", "extended"))
     onnx_face_class_names: Tuple[str, ...] = Field(("face",))
     face_recognition_onnx_model: str = Field(
         "backend/models/weights/face_recognition_arcface_dummy.onnx"
@@ -153,7 +161,11 @@ class Settings(BaseSettings):
     def face_detector_weights_path(self) -> Optional[Path]:
         """Возвращает абсолютный путь до весов детектора лиц, если они заданы."""
 
-        candidate = (self.face_detector_weights or self.yolo_face_model or "").strip()
+        manual = (self.face_detector_weights or self.yolo_face_model or "").strip()
+        if manual:
+            return self.resolve_project_path(manual)
+
+        candidate = (self.onnx_face_model or "").strip()
         if not candidate:
             return None
         path = Path(candidate)
@@ -177,6 +189,43 @@ class Settings(BaseSettings):
         if path.is_absolute():
             return path
         return (_PROJECT_ROOT / path).resolve()
+
+    def resolve_optional_project_path(self, raw_path: Optional[str | Path]) -> Optional[Path]:
+        """Преобразует относительный путь в абсолютный, если он задан."""
+
+        if raw_path is None:
+            return None
+        return self.resolve_project_path(raw_path)
+
+    def detector_weights_path(self) -> Path:
+        """Путь до весов основного детектора людей/объектов."""
+
+        if self.inference_backend == "onnx":
+            return self.resolve_project_path(self.onnx_det_model)
+        return self.resolve_project_path(self.yolo_det_model)
+
+    def pose_weights_path(self) -> Path:
+        """Путь до весов позового детектора."""
+
+        if self.inference_backend == "onnx":
+            return self.resolve_project_path(self.onnx_pose_model)
+        return self.resolve_project_path(self.yolo_pose_model)
+
+    def face_detector_onnx_path(self) -> Optional[Path]:
+        """Абсолютный путь до ONNX-весов детектора лиц."""
+
+        return self.resolve_optional_project_path(self.onnx_face_model)
+
+    def face_classifier_onnx_path(self) -> Path:
+        """Абсолютный путь до ONNX-весов классификатора/эмбеддингов лиц."""
+
+        return self.resolve_project_path(self.onnx_face_classifier_model)
+
+    @property
+    def requires_pose_models(self) -> bool:
+        """Нужно ли поднимать позовый детектор для текущей конфигурации."""
+
+        return self.enable_phone_detection or self.enable_activity_detection
 
     @property
     def face_training_dataset_root_path(self) -> Path:
@@ -204,7 +253,8 @@ class Settings(BaseSettings):
     def face_recognition_onnx_model_path(self) -> Path:
         """Абсолютный путь до ONNX-весов модели эмбеддингов лиц."""
 
-        return self.resolve_project_path(self.face_recognition_onnx_model)
+        candidate = self.onnx_face_classifier_model or self.face_recognition_onnx_model
+        return self.resolve_project_path(candidate)
 
     @property
     def cors_allow_origin_list(self) -> List[str]:
