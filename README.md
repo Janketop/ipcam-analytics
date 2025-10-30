@@ -48,6 +48,26 @@ docker compose up --build
 - `PHONE_SCORE_SMOOTHING` — сколько последних кадров участвует в сглаживании уверенности (по умолчанию 5), помогает не терять короткие детекции.
 - `POSE_ONLY_SCORE_THRESHOLD`, `POSE_ONLY_HEAD_RATIO`, `POSE_WRISTS_DIST_RATIO`, `POSE_TILT_THRESHOLD` — параметры позовой эвристики для случаев, когда телефон не детектится напрямую (руки возле головы, запястья близко друг к другу, наклон головы).
 
+### ONNX-инференс и экспорт моделей
+- `INFERENCE_BACKEND` — переключатель между PyTorch (`pt`) и ONNX Runtime (`onnx`). Значение по умолчанию — `onnx`, поэтому все пути до весов в формате ONNX подхватываются автоматически.
+- `ONNX_DET_MODEL`, `ONNX_POSE_MODEL`, `ONNX_FACE_MODEL`, `ONNX_FACE_CLASSIFIER_MODEL` — относительные или абсолютные пути до экспортированных ONNX-весов (детектор людей/телефонов, позовый детектор, детектор лиц и классификатор/эмбеддинги). Относительные пути резолвятся от корня репозитория, поэтому можно хранить модели внутри `backend/models/weights`.
+- `ONNX_GRAPH_OPTIMIZATIONS` — список включённых оптимизаций графа ORT (`basic`, `extended`, `all` и т.д.), задаётся через запятую. Параметр передаётся в инициализацию `onnxruntime-gpu`, что позволяет ускорять инференс без пересборки контейнера.
+
+Экспорт моделей в ONNX делается стандартными инструментами Ultralytics/YOLO:
+```bash
+# экспортируйте весы детектора людей/телефонов
+yolo export model=yolov8n.pt format=onnx device=cpu simplify=True
+
+# экспортируйте позовую модель
+yolo export model=yolov8n-pose.pt format=onnx device=cpu
+
+# экспортируйте детектор лиц (пример для кастомной модели)
+yolo export model=runs/detect/train/weights/best.pt format=onnx device=cpu
+```
+Полученные файлы положите в `backend/models/weights` и пропишите соответствующие переменные окружения. Для классификатора лиц можно использовать готовый файл `backend/models/weights/face_recognition_arcface_dummy.onnx` или подложить собственные эмбеддинги. Сервис сам превратит относительные пути в абсолютные, что упрощает вынос моделей в отдельные тома.
+
+Контейнер backend собирается на базе CUDA-образа и устанавливает `onnxruntime-gpu`, поэтому дополнительные зависимости ставить не нужно. В `docker-compose.yml` уже прописано пробрасывание GPU (`deploy.resources.reservations.devices` + переменные `NVIDIA_VISIBLE_DEVICES`), достаточно запустить `docker compose up --build` на машине с установленным NVIDIA Container Toolkit.
+
 ### Обучение собственного детектора лиц
 - Для точного распознавания лиц можно дообучить модель Ultralytics YOLO11m на датасете WIDERFace: `python -m backend.utils.train_face_detector --device cuda:0 --epochs 50` (запускайте в контейнере backend).
 - Скрипт автоматически скачает и конвертирует датасет в формат YOLO, запустит обучение и положит лучшие веса в `backend/weights/yolov11m-face.pt`. При повторных запусках используйте флаг `--skip-download`, чтобы не скачивать архивы заново; затем обновите `FACE_DETECTOR_WEIGHTS` (или, для обратной совместимости, `YOLO_FACE_MODEL`), если хотите использовать дообученный файл вместо базового `yolov11m-face.pt`.

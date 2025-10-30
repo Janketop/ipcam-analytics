@@ -119,6 +119,24 @@ def _check_runtime() -> None:
         )
 
 
+def _resolve_graph_optimization_level() -> "ort.GraphOptimizationLevel":
+    """Подбирает оптимальный уровень оптимизаций графа для onnxruntime."""
+
+    levels = {
+        "disable": ort.GraphOptimizationLevel.ORT_DISABLE_ALL,
+        "basic": ort.GraphOptimizationLevel.ORT_ENABLE_BASIC,
+        "extended": ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED,
+        "all": ort.GraphOptimizationLevel.ORT_ENABLE_ALL,
+    }
+
+    for candidate in settings.onnx_graph_optimizations:
+        key = candidate.strip().lower()
+        if key in levels:
+            return levels[key]
+
+    return ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+
+
 def create_session(model_path: str | Path, *, providers: Optional[Sequence[str]] = None) -> "ort.InferenceSession":
     """Создаёт сессию ONNXRuntime с запрошенными провайдерами."""
 
@@ -128,11 +146,20 @@ def create_session(model_path: str | Path, *, providers: Optional[Sequence[str]]
         providers = settings.onnx_providers
 
     provider_list = list(providers)
+    session_options = ort.SessionOptions()
+    try:
+        session_options.graph_optimization_level = _resolve_graph_optimization_level()
+    except Exception as exc:  # pragma: no cover - зависит от сборки onnxruntime
+        logger.warning("Не удалось установить уровень оптимизаций ONNX графа: %s", exc)
     last_error: Optional[Exception] = None
     for candidate in provider_list:
         try:
             logger.debug("Инициализация ONNXRuntime (%s) для %s", candidate, resolved)
-            return ort.InferenceSession(resolved, providers=[candidate])
+            return ort.InferenceSession(
+                resolved,
+                providers=[candidate],
+                sess_options=session_options,
+            )
         except Exception as exc:  # pragma: no cover - зависит от окружения
             last_error = exc
             logger.warning("ONNXRuntime провайдер %s недоступен: %s", candidate, exc)

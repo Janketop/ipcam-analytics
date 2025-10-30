@@ -299,24 +299,34 @@ class AIDetector:
         self.enable_activity_detection = settings.enable_activity_detection
         self.requires_pose = self.enable_phone_detection or self.enable_activity_detection
 
-        det_weights = settings.yolo_det_model
-        pose_weights = settings.yolo_pose_model
+        det_weights = settings.detector_weights_path()
+        pose_weights = settings.pose_weights_path()
         self.device_preference = settings.yolo_device
         self.device = resolve_device(self.device_preference, settings.cuda_visible_devices)
-        self.det_backend = "onnx" if str(det_weights).lower().endswith(".onnx") else "yolo"
+        backend_choice = settings.inference_backend
+        if backend_choice == "onnx" or str(det_weights).lower().endswith(".onnx"):
+            self.det_backend = "onnx"
+        else:
+            self.det_backend = "yolo"
         self.det = None
         self.pose = None
 
         if self.det_backend == "onnx":
-            self.det = OnnxYoloDetector(det_weights, class_names=settings.onnx_det_class_names)
+            self.det = OnnxYoloDetector(
+                det_weights,
+                class_names=settings.onnx_det_class_names,
+            )
         else:
-            self.det = YOLO(det_weights)
+            self.det = YOLO(str(det_weights))
 
         if self.requires_pose:
-            if str(pose_weights).lower().endswith(".onnx"):
-                self.pose = OnnxPoseEstimator(pose_weights, kpt_shape=settings.onnx_pose_kpt_shape)
+            if self.det_backend == "onnx" or str(pose_weights).lower().endswith(".onnx"):
+                self.pose = OnnxPoseEstimator(
+                    pose_weights,
+                    kpt_shape=settings.onnx_pose_kpt_shape,
+                )
             else:
-                self.pose = YOLO(pose_weights)
+                self.pose = YOLO(str(pose_weights))
 
         self.face_conf = settings.yolo_face_conf
         self.face_detector_requested = (settings.face_detector_type or "yolo").strip().lower()
