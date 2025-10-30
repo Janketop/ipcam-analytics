@@ -16,6 +16,7 @@ import numpy as np
 from backend.core.config import settings
 from backend.core.database import SessionFactory
 from backend.core.logger import logger
+from backend.core.paths import DATASET_FACE_DETECTION_DIR
 from backend.models import Event, FaceSample
 
 from backend.services.activity_detector import ActivityDetector
@@ -90,6 +91,7 @@ class IngestWorker(Thread):
         self.detector.set_employee_recognizer(self.employee_recognizer)
         self.employee_presence_cooldown = float(settings.face_recognition_presence_cooldown)
         self._employee_presence_last: dict[int, float] = {}
+        self._unknown_face_recent: dict[str, float] = {}
         self.activity_detector = (
             ActivityDetector(idle_threshold=self.idle_alert_time)
             if self.enable_activity_detection
@@ -239,6 +241,21 @@ class IngestWorker(Thread):
 
         self._face_sample_model = face_sample_model
         return face_sample_model
+
+    def _prune_unknown_face_cache(self, now_monotonic: float) -> None:
+        if not self._unknown_face_recent:
+            return
+
+        cooldown = max(float(self.employee_presence_cooldown), 0.0)
+        if cooldown <= 0.0:
+            if len(self._unknown_face_recent) > 512:
+                self._unknown_face_recent.clear()
+            return
+
+        expiry_threshold = now_monotonic - cooldown * 4.0
+        for key, seen_at in list(self._unknown_face_recent.items()):
+            if seen_at < expiry_threshold:
+                self._unknown_face_recent.pop(key, None)
 
     def _submit_async(self, coro: Awaitable[None], payload_kind: str) -> None:
         if not self.main_loop or self.main_loop.is_closed():
@@ -961,6 +978,7 @@ class IngestWorker(Thread):
                 now = datetime.now(timezone.utc)
                 recognized_employees: dict[int, dict[str, object]] = {}
                 employee_by_person: dict[str, dict[str, object]] = {}
+                unknown_faces_to_store: list[dict[str, Any]] = []
                 for person in people:
                     employee_info = person.get("employee") if isinstance(person, dict) else None
                     person_id_raw = person.get("id") if isinstance(person, dict) else None
@@ -992,6 +1010,46 @@ class IngestWorker(Thread):
                             "name": employee_name,
                             "distance": distance_val,
                         }
+
+                now_monotonic = time.monotonic()
+                self._prune_unknown_face_cache(now_monotonic)
+                for person in people:
+                    if not isinstance(person, dict):
+                        continue
+
+                    unknown_face = person.get("unknown_face")
+                    if not isinstance(unknown_face, dict):
+                        continue
+
+                    snapshot_img = unknown_face.get("snapshot")
+                    if snapshot_img is None:
+                        continue
+
+                    face_key = unknown_face.get("hash")
+                    if not face_key:
+                        person_identifier = person.get("id")
+                        if person_identifier is not None:
+                            face_key = f"person:{person_identifier}"
+                    if face_key:
+                        last_seen = self._unknown_face_recent.get(face_key)
+                        if (
+                            last_seen is not None
+                            and self.employee_presence_cooldown > 0.0
+                            and now_monotonic - last_seen < self.employee_presence_cooldown
+                        ):
+                            continue
+                        self._unknown_face_recent[face_key] = now_monotonic
+
+                    candidate_key = str(person.get("id")) if person.get("id") is not None else None
+                    unknown_faces_to_store.append(
+                        {
+                            "snapshot": snapshot_img,
+                            "candidate_key": candidate_key,
+                            "hash": unknown_face.get("hash"),
+                            "embedding": unknown_face.get("embedding"),
+                            "captured_at": now,
+                        }
+                    )
 
                 if self.activity_detector is not None:
                     activity_updates = self.activity_detector.update(people, now=now)
@@ -1188,8 +1246,10 @@ class IngestWorker(Thread):
                         )
 
                 persisted_events = []
-                if events_to_store:
+                stored_face_samples: list[dict[str, Any]] = []
+                if events_to_store or unknown_faces_to_store:
                     with self.session_factory() as session:
+                        face_sample_model = self._get_face_sample_model()
                         for payload in events_to_store:
                             snapshot_img = payload.get("snapshot")
                             ts = payload["ts"]
@@ -1213,11 +1273,14 @@ class IngestWorker(Thread):
                             session.add(event)
                             session.flush()
 
-                            if payload["kind"] == "activity" and snap_url:
-                                face_sample_model = self._get_face_sample_model()
-                                if face_sample_model is not None and not session.query(face_sample_model).filter(
-                                    face_sample_model.event_id == event.id
-                                ).first():
+                            if (
+                                payload["kind"] == "activity"
+                                and snap_url
+                                and face_sample_model is not None
+                                and not session.query(face_sample_model)
+                                .filter(face_sample_model.event_id == event.id)
+                                .first()
+                            ):
                                     candidate_raw = meta.get("person_id") or meta.get("personId")
                                     candidate_key = None
                                     if isinstance(candidate_raw, str) and candidate_raw.strip():
@@ -1244,8 +1307,53 @@ class IngestWorker(Thread):
                                     "meta": meta,
                                 }
                             )
+
+                        if face_sample_model is not None:
+                            for sample_payload in unknown_faces_to_store:
+                                ts = sample_payload["captured_at"]
+                                snapshot_img = sample_payload["snapshot"]
+                                snap_url = save_snapshot(
+                                    snapshot_img,
+                                    ts,
+                                    self.name,
+                                    event_type="face_unknown",
+                                    dataset_dir=DATASET_FACE_DETECTION_DIR,
+                                )
+                                if not snap_url:
+                                    continue
+
+                                sample = face_sample_model(
+                                    event_id=None,
+                                    camera_id=self.cam_id,
+                                    snapshot_url=snap_url,
+                                    status=face_sample_model.STATUS_UNVERIFIED,
+                                    candidate_key=sample_payload.get("candidate_key"),
+                                    captured_at=ts,
+                                )
+
+                                embedding_result = sample_payload.get("embedding")
+                                if embedding_result is not None:
+                                    try:
+                                        sample.set_embedding(
+                                            embedding_result.as_bytes(),
+                                            dim=embedding_result.dimension,
+                                            model=embedding_result.model,
+                                        )
+                                    except Exception:
+                                        logger.exception(
+                                            "[%s] Не удалось сохранить эмбеддинг неизвестного лица",
+                                            self.name,
+                                        )
+                                session.add(sample)
+                                session.flush()
+                                stored_face_samples.append(
+                                    {
+                                        "snapshot_url": snap_url,
+                                        "hash": sample_payload.get("hash"),
+                                    }
+                                )
                         session.commit()
-                    if self.snapshot_candidates:
+                    if (events_to_store or unknown_faces_to_store) and self.snapshot_candidates:
                         self.snapshot_candidates.clear()
                         self.best_snapshot_by_employee.clear()
                 for stored in persisted_events:
@@ -1279,6 +1387,15 @@ class IngestWorker(Thread):
                             )
                         else:
                             self._submit_async(coro, "события")
+
+                if stored_face_samples:
+                    for sample_info in stored_face_samples:
+                        logger.info(
+                            "[%s] Сохранён образец неизвестного лица (hash=%s, url=%s)",
+                            self.name,
+                            sample_info.get("hash"),
+                            sample_info.get("snapshot_url"),
+                        )
 
             cap.release()
             if self.stop_flag:

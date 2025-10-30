@@ -1070,6 +1070,7 @@ class AIDetector:
 
             employee_name = None
             employee_info: Optional[Dict[str, Any]] = None
+            unknown_face_payload: Optional[Dict[str, Any]] = None
             if recognizer is not None:
                 try:
                     embedding_result = recognizer.compute_embedding(frame, face_bbox_coords)
@@ -1098,6 +1099,52 @@ class AIDetector:
                             "metric": match.metric,
                         }
                         employee_name = match.employee_name
+                    else:
+                        try:
+                            fx1, fy1, fx2, fy2 = map(float, face_bbox_coords)
+                        except Exception:
+                            fx1 = fy1 = fx2 = fy2 = None
+
+                        face_snapshot = None
+                        face_hash = None
+                        x1 = y1 = x2 = y2 = None
+                        if None not in (fx1, fy1, fx2, fy2):
+                            x1 = max(0, min(int(round(fx1)), w_frame - 1))
+                            y1 = max(0, min(int(round(fy1)), h_frame - 1))
+                            x2 = max(0, min(int(round(fx2)), w_frame))
+                            y2 = max(0, min(int(round(fy2)), h_frame))
+                            if x2 > x1 and y2 > y1:
+                                face_roi = frame[y1:y2, x1:x2]
+                                if face_roi.size:
+                                    try:
+                                        face_snapshot = prepare_snapshot(face_roi, False, None)
+                                    except Exception:
+                                        logger.exception(
+                                            "[%s] Не удалось подготовить снэпшот для неизвестного лица",
+                                            self.camera_name,
+                                        )
+                                        face_snapshot = None
+                                    if face_snapshot is not None and face_snapshot.size:
+                                        try:
+                                            face_hash = hashlib.sha1(
+                                                np.ascontiguousarray(face_snapshot).tobytes()
+                                            ).hexdigest()
+                                        except Exception:
+                                            logger.exception(
+                                                "[%s] Не удалось вычислить хеш лица",
+                                                self.camera_name,
+                                            )
+                                            face_hash = None
+
+                        if face_snapshot is not None:
+                            unknown_face_payload = {
+                                "bbox": [x1, y1, x2, y2]
+                                if None not in (fx1, fy1, fx2, fy2)
+                                else None,
+                                "snapshot": face_snapshot,
+                                "hash": face_hash,
+                                "embedding": embedding_result,
+                            }
 
             def point_valid(idx, conf_threshold=0.2):
                 if pose_missing:
@@ -1256,6 +1303,7 @@ class AIDetector:
                     },
                     "employee_name": employee_name,
                     "employee": employee_info,
+                    "unknown_face": unknown_face_payload,
                 }
             )
 
