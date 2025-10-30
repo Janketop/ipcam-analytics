@@ -70,6 +70,16 @@ if numpy.__version__ != expected:
         "Make sure the constraints are applied correctly."
     )
 PY
+RUN set -eux; \
+    cudnn_lib_dir="$(python3 - <<'PY'
+import pathlib
+import nvidia.cudnn
+
+print((pathlib.Path(nvidia.cudnn.__file__).resolve().parent / 'lib').as_posix())
+PY
+)"; \
+    cp -P "${cudnn_lib_dir}"/libcudnn*.so* /usr/lib/x86_64-linux-gnu/; \
+    ldconfig
 
 RUN set -eux; \
     python3 -m pip uninstall -y opencv-python || true; \
