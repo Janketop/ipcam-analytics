@@ -63,6 +63,13 @@ const formatPlate = (meta?: EventMeta) => {
   return plate;
 };
 
+const formatEmployeeName = (meta?: EventMeta) => {
+  const name = meta?.employeeName;
+  if (!name) return null;
+  const trimmed = name.trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
+
 const formatEntryTime = (meta?: EventMeta, fallback?: string) => {
   const ts = meta?.entry_ts || fallback;
   if (!ts) return '—';
@@ -418,6 +425,9 @@ const EventsPage = () => {
             </td>
             <td style={{ padding: 10, borderBottom: '1px solid #e2e8f0', minWidth: 160 }}>
               <div style={{ fontWeight: 600 }}>{event.type}</div>
+              <div style={{ color: '#0f172a', fontSize: 13 }}>
+                Сотрудник: {formatEmployeeName(event.meta) ?? '—'}
+              </div>
               <div style={{ color: '#475569', fontSize: 13 }}>{event.camera ? `Камера: ${event.camera}` : '—'}</div>
             </td>
             <td style={{ padding: 10, borderBottom: '1px solid #e2e8f0' }}>{new Date(event.start_ts).toLocaleString()}</td>
