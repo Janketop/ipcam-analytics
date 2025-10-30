@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     enable_activity_detection: bool = Field(False)
 
     face_recognition_threshold: float = Field(0.6, ge=0.0)
-    face_recognition_model: str = Field("facenet_vggface2")
+    face_recognition_model: str = Field("arcface_insightface")
     face_recognition_presence_cooldown: float = Field(15.0, ge=0.0)
 
     retention_days: int = Field(7, ge=0)
@@ -104,6 +104,9 @@ class Settings(BaseSettings):
     ))
     onnx_pose_kpt_shape: Tuple[int, int] = Field((17, 3))
     onnx_face_class_names: Tuple[str, ...] = Field(("face",))
+    face_recognition_onnx_model: str = Field(
+        "backend/models/weights/face_recognition_arcface_dummy.onnx"
+    )
 
     face_training_dataset_root: str = Field("dataset/widerface")
     face_training_skip_download: bool = Field(False)
@@ -196,6 +199,12 @@ class Settings(BaseSettings):
         """Возвращает абсолютный путь до каталога с весами EasyOCR."""
 
         return self.resolve_project_path(self.easyocr_model_dir)
+
+    @property
+    def face_recognition_onnx_model_path(self) -> Path:
+        """Абсолютный путь до ONNX-весов модели эмбеддингов лиц."""
+
+        return self.resolve_project_path(self.face_recognition_onnx_model)
 
     @property
     def cors_allow_origin_list(self) -> List[str]:
