@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import List, Literal, Optional, Set, Tuple
 from urllib.parse import quote_plus
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _CONFIG_DIR = Path(__file__).resolve().parent
@@ -196,6 +196,24 @@ class Settings(BaseSettings):
         if raw_path is None:
             return None
         return self.resolve_project_path(raw_path)
+
+    @field_validator("onnx_graph_optimizations", mode="before")
+    @classmethod
+    def _parse_onnx_graph_optimizations(cls, value: object) -> Tuple[str, ...] | object:
+        """Допускает передачу списка оптимизаций через строку окружения.
+
+        Pydantic ожидает JSON-представление для кортежей, из-за чего строка
+        вида ``"basic,extended"`` вызывает исключение при загрузке настроек
+        (именно так значение задано в ``.env.example``). Валидатор приводит
+        строку к формату ``Tuple[str, ...]`` с учётом разделителей, используемых
+        в ``_split_env_list``.
+        """
+
+        if isinstance(value, str):
+            return tuple(_split_env_list(value))
+        if isinstance(value, (list, tuple)):
+            return tuple(value)
+        return value
 
     def detector_weights_path(self) -> Path:
         """Путь до весов основного детектора людей/объектов."""
