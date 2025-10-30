@@ -82,17 +82,28 @@ class Settings(BaseSettings):
 
     yolo_device: str = Field("auto")
     cuda_visible_devices: Optional[str] = Field(None)
-    yolo_det_model: str = Field("yolov8n.pt")
-    yolo_pose_model: str = Field("yolov8n-pose.pt")
-    yolo_face_model: str = Field("weights/yolov11m-face.pt")
+    yolo_det_model: str = Field("backend/models/weights/person_detector.onnx")
+    yolo_pose_model: str = Field("backend/models/weights/pose_estimator.onnx")
+    yolo_face_model: str = Field("backend/models/weights/face_detector.onnx")
     yolo_face_model_url: Optional[str] = Field(
         "https://github.com/YapaLab/yolo-face/releases/latest/download/yolov11m-face.pt"
     )
-    face_detector_type: str = Field("yolo")
+    face_detector_type: str = Field("onnx")
     face_detector_weights: Optional[str] = Field(None)
     face_detector_device: Optional[str] = Field(None)
     yolo_image_size: int = Field(640, ge=32)
     yolo_face_conf: float = Field(0.35, ge=0.05)
+
+    onnx_providers: Tuple[str, ...] = Field(("CUDAExecutionProvider", "CPUExecutionProvider"))
+    onnx_det_class_names: Tuple[str, ...] = Field((
+        "person",
+        "cell phone",
+        "car",
+        "truck",
+        "bus",
+    ))
+    onnx_pose_kpt_shape: Tuple[int, int] = Field((17, 3))
+    onnx_face_class_names: Tuple[str, ...] = Field(("face",))
 
     face_training_dataset_root: str = Field("dataset/widerface")
     face_training_skip_download: bool = Field(False)
