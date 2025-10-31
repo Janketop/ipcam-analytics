@@ -78,20 +78,24 @@ import pathlib
 import shutil
 import sys
 
-site_packages_dirs = [
+package_dirs = [
     pathlib.Path(p)
     for p in sys.path
-    if p and "site-packages" in p and pathlib.Path(p).is_dir()
+    if p
+    and ("site-packages" in p or "dist-packages" in p)
+    and pathlib.Path(p).is_dir()
 ]
 
-if not site_packages_dirs:
-    raise SystemExit("Не найдены каталоги site-packages для поиска libcudnn*.so")
+if not package_dirs:
+    raise SystemExit(
+        "Не найдены каталоги site-packages/dist-packages для поиска libcudnn*.so"
+    )
 
 target_dir = pathlib.Path("/usr/lib/x86_64-linux-gnu")
 target_dir.mkdir(parents=True, exist_ok=True)
 
 all_libs = []
-for base in site_packages_dirs:
+for base in package_dirs:
     all_libs.extend(sorted(base.rglob("libcudnn*.so*")))
 
 preferred = [p for p in all_libs if ".so.9" in p.name or p.name.endswith(".so")]
