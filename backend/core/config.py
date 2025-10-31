@@ -11,6 +11,8 @@ from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_settings.sources import EnvSettingsSource
 
+from backend.services.arcface_weights import DEFAULT_ARCFACE_SOURCES
+
 _CONFIG_DIR = Path(__file__).resolve().parent
 _BACKEND_DIR = _CONFIG_DIR.parent
 _PROJECT_ROOT = _BACKEND_DIR.parent
@@ -128,6 +130,7 @@ class Settings(BaseSettings):
     onnx_face_classifier_model: str = Field(
         "backend/models/weights/face_recognition_arcface_dummy.onnx"
     )
+    arcface_weights_sources: Tuple[str, ...] = Field(DEFAULT_ARCFACE_SOURCES)
     yolo_face_model_url: Optional[str] = Field(
         "https://github.com/YapaLab/yolo-face/releases/latest/download/yolov11m-face.pt"
     )
@@ -250,6 +253,26 @@ class Settings(BaseSettings):
         if raw_path is None:
             return None
         return self.resolve_project_path(raw_path)
+
+    @field_validator("arcface_weights_sources", mode="before")
+    @classmethod
+    def _parse_arcface_weights_sources(
+        cls, value: object
+    ) -> Tuple[str, ...] | object:
+        """Позволяет задавать источники ArcFace через строку или список."""
+
+        if value is None:
+            return DEFAULT_ARCFACE_SOURCES
+
+        if isinstance(value, str):
+            parsed = _split_env_list(value)
+            return tuple(parsed) if parsed else DEFAULT_ARCFACE_SOURCES
+
+        if isinstance(value, (list, tuple)):
+            cleaned = [str(item).strip() for item in value if str(item).strip()]
+            return tuple(cleaned) if cleaned else DEFAULT_ARCFACE_SOURCES
+
+        return value
 
     @field_validator("onnx_graph_optimizations", mode="before")
     @classmethod
