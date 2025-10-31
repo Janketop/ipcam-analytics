@@ -141,12 +141,9 @@ def _ensure_face_weights(
 ) -> Optional[str]:
     """Возвращает путь до весов face-модели, скачивая их при необходимости."""
 
-    configured = (
-        settings.face_detector_weights
-        or settings.yolo_face_model
-        or settings.onnx_face_model
-        or ""
-    ).strip()
+    manual_configured = (settings.face_detector_weights or "").strip()
+    yolo_configured = (settings.yolo_face_model or "").strip()
+    onnx_configured = (settings.onnx_face_model or "").strip()
 
     preferred_path: Optional[Path]
     candidates: list[Path] = []
@@ -157,6 +154,18 @@ def _ensure_face_weights(
         expected_suffix = f".{normalized}" if normalized else None
     else:
         expected_suffix = None
+
+    yolo_suffix = Path(yolo_configured).suffix.lower() if yolo_configured else ""
+
+    if (
+        expected_suffix == ".onnx"
+        and not manual_configured
+        and onnx_configured
+        and yolo_suffix != ".onnx"
+    ):
+        configured = onnx_configured
+    else:
+        configured = manual_configured or yolo_configured or onnx_configured or ""
 
     if configured:
         try:
