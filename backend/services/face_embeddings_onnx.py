@@ -68,7 +68,7 @@ def _ensure_model_file_ready(path: Path) -> None:
             path,
         )
 
-    if ensure_arcface_weights(path):
+    if ensure_arcface_weights(path, sources=settings.arcface_weights_sources):
         logger.info(
             "Файл ArcFace автоматически подготовлен в %s (%.1f МБ)",
             path,

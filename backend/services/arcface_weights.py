@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import shutil
+import tarfile
 import tempfile
 from contextlib import closing
 from pathlib import Path
@@ -14,15 +15,19 @@ from backend.core.logger import logger
 
 # Весовые файлы InsightFace достаточно крупные, поэтому перечисляем несколько
 # зеркал/вариантов, чтобы увеличить шанс успешного скачивания.
-_DEFAULT_ARCFACE_SOURCES: tuple[str, ...] = (
+DEFAULT_ARCFACE_SOURCES: tuple[str, ...] = (
     # Полная сборка Buffalo-L (включает w600k_r50.onnx ~174 МБ)
     "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip",
     # Более компактный набор моделей (также содержит w600k_r50.onnx)
     "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_s.zip",
-    # Альтернативный набор с глитн 360К (glint360k_r100.onnx)
+    # Модель с дообучением на glint360k (glint360k_r100.onnx)
     "https://github.com/deepinsight/insightface/releases/download/v0.7/antelopev2.zip",
+    # Дополнительный архив с облегчённой версией (w600k_r50.onnx)
+    "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip",
     # Зеркало на HuggingFace (может переименовываться, поэтому оставляем последним)
     "https://huggingface.co/deepinsight/insightface/resolve/main/models/buffalo_l/w600k_r50.onnx",
+    # Прямой доступ к актуальному файлу из репозитория InsightFace (LFS)
+    "https://huggingface.co/deepinsight/insightface/resolve/main/models/antelopev2/glint360k_r100.onnx",
 )
 
 _PREFERRED_MODEL_NAMES: tuple[str, ...] = (
@@ -140,7 +145,47 @@ def _extract_from_zip(source: Path, destination: Path) -> bool:
         return False
 
     logger.info(
-        "ArcFace веса извлечены из архива %s -> %s (%.1f МБ)",
+        "ArcFace веса извлечены из ZIP-архива %s -> %s (%.1f МБ)",
+        source,
+        destination,
+        destination.stat().st_size / (1024 * 1024),
+    )
+    return True
+
+
+def _extract_from_tar(source: Path, destination: Path) -> bool:
+    """Извлекает ONNX-файл из tar/tgz архива InsightFace."""
+
+    try:
+        with tarfile.open(source) as archive:
+            members = [member for member in archive.getmembers() if member.isfile()]
+            member_name = _select_member(member.name for member in members)
+            if member_name is None:
+                raise RuntimeError("в архиве отсутствует .onnx файл")
+
+            member = next(item for item in members if item.name == member_name)
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                raise RuntimeError("не удалось извлечь файл из tar")
+
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with closing(extracted) as src, destination.open("wb") as dst:
+                shutil.copyfileobj(src, dst)
+    except Exception as exc:
+        logger.warning("Не удалось распаковать ArcFace из %s: %s", source, exc)
+        return False
+
+    valid, reason = validate_arcface_model(destination)
+    if not valid:
+        logger.warning(
+            "Извлечённый файл ArcFace из %s невалиден: %s",
+            source,
+            reason,
+        )
+        return False
+
+    logger.info(
+        "ArcFace веса извлечены из TAR-архива %s -> %s (%.1f МБ)",
         source,
         destination,
         destination.stat().st_size / (1024 * 1024),
@@ -161,7 +206,7 @@ def ensure_arcface_weights(
     if valid:
         return True
 
-    candidates = list(sources) if sources is not None else list(_DEFAULT_ARCFACE_SOURCES)
+    candidates = list(sources) if sources is not None else list(DEFAULT_ARCFACE_SOURCES)
     if not candidates:
         return False
 
@@ -172,13 +217,14 @@ def ensure_arcface_weights(
             if local is None:
                 continue
 
-            try:
-                suffix = local.suffix.lower()
-            except ValueError:
-                suffix = ""
-
-            if suffix == ".zip":
+            lower_name = local.name.lower()
+            if lower_name.endswith(".zip"):
                 if _extract_from_zip(local, destination):
+                    return True
+                continue
+
+            if lower_name.endswith(('.tar', '.tar.gz', '.tgz', '.tar.xz')):
+                if _extract_from_tar(local, destination):
                     return True
                 continue
 
@@ -210,6 +256,7 @@ def ensure_arcface_weights(
 
 
 __all__ = [
+    "DEFAULT_ARCFACE_SOURCES",
     "ensure_arcface_weights",
     "validate_arcface_model",
 ]
