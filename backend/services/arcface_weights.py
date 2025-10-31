@@ -11,6 +11,10 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from zipfile import ZipFile
 
+import onnx
+
+from onnx import checker
+
 from backend.core.logger import logger
 
 # Весовые файлы InsightFace достаточно крупные, поэтому перечисляем несколько
@@ -66,13 +70,14 @@ def validate_arcface_model(path: Path) -> tuple[bool, str]:
         return False, f"слишком маленький ({size} байт)"
 
     try:
-        with path.open("rb") as handle:
-            header = handle.read(4)
-    except OSError as exc:
-        return False, f"не удалось прочитать файл: {exc}"
+        model = onnx.load(str(path))
+    except Exception as exc:  # pragma: no cover - зависит от содержимого файла
+        return False, f"не удалось разобрать ONNX: {exc}"
 
-    if header != b"ONNX":
-        return False, "не похож на ONNX (ожидался заголовок 'ONNX')"
+    try:
+        checker.check_model(model)
+    except checker.ValidationError as exc:
+        return False, f"валидатор ONNX отклонил модель: {exc}"
 
     return True, ""
 
