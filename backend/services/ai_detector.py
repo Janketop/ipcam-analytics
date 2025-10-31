@@ -140,7 +140,12 @@ def _ensure_face_weights(*, allow_missing: bool = False) -> Optional[str]:
     """Возвращает путь до весов face-модели, скачивая их при необходимости."""
 
     preferred_path = settings.face_detector_weights_path
-    configured = (settings.face_detector_weights or settings.yolo_face_model or "").strip()
+    configured = (
+        settings.face_detector_weights
+        or settings.yolo_face_model
+        or settings.onnx_face_model
+        or ""
+    ).strip()
 
     if not configured or preferred_path is None:
         message = "Не задан путь до весов детектора лиц"
