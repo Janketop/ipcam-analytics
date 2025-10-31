@@ -368,10 +368,12 @@ class OnnxYoloDetector:
         self.names = {idx: name for idx, name in enumerate(self.class_names)}
         self.session = None
         self.model = type("DummyOnnxModel", (), {"names": self.names})()
+        self.init_error: Optional[str] = None
         try:
             self.session = create_session(self.model_path)
         except OnnxRuntimeNotAvailableError as exc:
-            logger.warning("ONNXRuntime недоступен: %s", exc)
+            self.init_error = str(exc)
+            logger.error("ONNXRuntime недоступен для %s: %s", self.model_path, exc)
 
     def __call__(self, frame: np.ndarray, *, imgsz: int, conf: float, **_: object) -> List[OnnxDetectionResult]:
         if self.session is None:
@@ -401,10 +403,14 @@ class OnnxPoseEstimator:
         self.kpt_shape = kpt_shape
         self.session = None
         self.model = type("PoseModel", (), {"model": type("Inner", (), {"kpt_shape": kpt_shape})()})()
+        self.init_error: Optional[str] = None
         try:
             self.session = create_session(self.model_path)
         except OnnxRuntimeNotAvailableError as exc:
-            logger.warning("ONNXRuntime недоступен для позовой модели: %s", exc)
+            self.init_error = str(exc)
+            logger.error(
+                "ONNXRuntime недоступен для позовой модели %s: %s", self.model_path, exc
+            )
 
     def __call__(self, frame: np.ndarray, *, imgsz: int, conf: float, **_: object) -> List[OnnxPoseResult]:
         if self.session is None:
@@ -437,10 +443,14 @@ class OnnxClassifier:
         self.model_path = str(model_path)
         self.class_names = list(class_names)
         self.session = None
+        self.init_error: Optional[str] = None
         try:
             self.session = create_session(self.model_path)
         except OnnxRuntimeNotAvailableError as exc:
-            logger.warning("ONNXRuntime недоступен для классификатора: %s", exc)
+            self.init_error = str(exc)
+            logger.error(
+                "ONNXRuntime недоступен для классификатора %s: %s", self.model_path, exc
+            )
 
     def predict(self, features: np.ndarray) -> np.ndarray:
         if self.session is None:
