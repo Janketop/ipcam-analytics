@@ -197,17 +197,35 @@ class Settings(BaseSettings):
     def face_detector_weights_path(self) -> Optional[Path]:
         """Возвращает абсолютный путь до весов детектора лиц, если они заданы."""
 
-        manual = (self.face_detector_weights or self.yolo_face_model or "").strip()
+        manual = (self.face_detector_weights or "").strip()
         if manual:
             return self.resolve_project_path(manual)
 
-        candidate = (self.onnx_face_model or "").strip()
-        if not candidate:
-            return None
-        path = Path(candidate)
-        if path.is_absolute():
-            return path
-        return (_BACKEND_DIR / path).resolve()
+        prefer_onnx = (
+            (self.face_detector_type or "").strip().lower() == "onnx"
+            or self.inference_backend == "onnx"
+        )
+
+        raw_candidates: list[str] = []
+        if prefer_onnx:
+            raw_candidates.append((self.onnx_face_model or "").strip())
+        raw_candidates.append((self.yolo_face_model or "").strip())
+
+        resolved_candidates: list[Path] = []
+        for candidate in raw_candidates:
+            if not candidate:
+                continue
+            path = Path(candidate)
+            if not path.is_absolute():
+                path = (_BACKEND_DIR / path).resolve()
+            resolved_candidates.append(path)
+            if path.exists():
+                return path
+
+        if resolved_candidates:
+            return resolved_candidates[0]
+
+        return None
 
     @property
     def yolo_face_model_path(self) -> Path:
