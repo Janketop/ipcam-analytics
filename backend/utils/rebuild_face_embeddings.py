@@ -23,7 +23,8 @@ def rebuild_missing_face_embeddings(
     """Пересчитывает эмбеддинги для снимков сотрудников без данных."""
 
     target_model = normalize_encoding_model_name(
-        encoding_model or settings.face_recognition_model
+        encoding_model or settings.face_recognition_model,
+        allow_fallback=True,
     )
     metadata = get_embedding_metadata(target_model)
 
