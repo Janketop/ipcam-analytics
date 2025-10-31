@@ -40,7 +40,11 @@ def test_compute_embedding_normalizes_output(monkeypatch):
 def test_ensure_model_file_ready_missing(monkeypatch, tmp_path):
     missing = tmp_path / "missing.onnx"
 
-    monkeypatch.setattr(face_embeddings_onnx, "ensure_arcface_weights", lambda path: False)
+    monkeypatch.setattr(
+        face_embeddings_onnx,
+        "ensure_arcface_weights",
+        lambda path, **_: False,
+    )
 
     with pytest.raises(RuntimeError) as excinfo:
         face_embeddings_onnx._ensure_model_file_ready(missing)  # type: ignore[attr-defined]
@@ -52,7 +56,11 @@ def test_ensure_model_file_ready_too_small(monkeypatch, tmp_path):
     dummy = tmp_path / "dummy.onnx"
     dummy.write_bytes(b"ONNX")
 
-    monkeypatch.setattr(face_embeddings_onnx, "ensure_arcface_weights", lambda path: False)
+    monkeypatch.setattr(
+        face_embeddings_onnx,
+        "ensure_arcface_weights",
+        lambda path, **_: False,
+    )
 
     with pytest.raises(RuntimeError) as excinfo:
         face_embeddings_onnx._ensure_model_file_ready(dummy)  # type: ignore[attr-defined]
@@ -64,7 +72,11 @@ def test_ensure_model_file_ready_invalid_header(monkeypatch, tmp_path):
     bad = tmp_path / "bad.onnx"
     bad.write_bytes(b"FAKE" + b"\x00" * 2048)
 
-    monkeypatch.setattr(face_embeddings_onnx, "ensure_arcface_weights", lambda path: False)
+    monkeypatch.setattr(
+        face_embeddings_onnx,
+        "ensure_arcface_weights",
+        lambda path, **_: False,
+    )
 
     with pytest.raises(RuntimeError) as excinfo:
         face_embeddings_onnx._ensure_model_file_ready(bad)  # type: ignore[attr-defined]
@@ -82,7 +94,7 @@ def test_ensure_model_file_ready_valid(tmp_path):
 def test_ensure_model_file_ready_downloads_when_possible(monkeypatch, tmp_path):
     destination = tmp_path / "auto.onnx"
 
-    def _fake_downloader(target: Path) -> bool:
+    def _fake_downloader(target: Path, *, sources):
         target.write_bytes(b"ONNX" + b"\x01" * 4096)
         return True
 
@@ -91,3 +103,26 @@ def test_ensure_model_file_ready_downloads_when_possible(monkeypatch, tmp_path):
     face_embeddings_onnx._ensure_model_file_ready(destination)  # type: ignore[attr-defined]
     assert destination.exists()
     assert destination.read_bytes().startswith(b"ONNX")
+
+
+def test_ensure_model_file_ready_respects_settings(monkeypatch, tmp_path):
+    destination = tmp_path / "custom.onnx"
+
+    captured: dict[str, tuple[str, ...]] = {}
+
+    def _fake_downloader(target: Path, *, sources):
+        captured["sources"] = tuple(sources)
+        target.write_bytes(b"ONNX" + b"\x02" * 4096)
+        return True
+
+    monkeypatch.setattr(face_embeddings_onnx, "ensure_arcface_weights", _fake_downloader)
+    monkeypatch.setattr(
+        face_embeddings_onnx.settings,
+        "arcface_weights_sources",
+        ("https://example.com/custom.onnx",),
+    )
+
+    face_embeddings_onnx._ensure_model_file_ready(destination)  # type: ignore[attr-defined]
+
+    assert destination.exists()
+    assert captured["sources"] == ("https://example.com/custom.onnx",)

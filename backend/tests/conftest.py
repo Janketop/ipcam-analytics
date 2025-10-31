@@ -13,10 +13,10 @@ from backend.services.arcface_weights import (
 def _prevent_real_arcface_download(monkeypatch):
     """Не даёт тестам перезаписывать файл-заглушку ArcFace в репозитории."""
 
-    def _safe_ensure(path: Path) -> bool:
+    def _safe_ensure(path: Path, *, sources=None) -> bool:
         if Path(path).name == "face_recognition_arcface_dummy.onnx":
             return True
-        return _real_ensure(path)
+        return _real_ensure(path, sources=sources)
 
     def _safe_validate(path: Path):
         if Path(path).name == "face_recognition_arcface_dummy.onnx" and Path(path).exists():

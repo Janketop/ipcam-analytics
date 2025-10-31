@@ -1,4 +1,6 @@
 from pathlib import Path
+import io
+import tarfile
 from zipfile import ZipFile
 
 from backend.services.arcface_weights import ensure_arcface_weights, validate_arcface_model
@@ -31,6 +33,24 @@ def test_ensure_arcface_weights_extracts_from_zip(tmp_path):
 
     with ZipFile(archive, "w") as zip_file:
         zip_file.writestr("models/w600k_r50.onnx", b"ONNX" + b"\x01" * 8192)
+
+    success = ensure_arcface_weights(destination, sources=[archive])
+
+    assert success
+    assert destination.exists()
+    assert destination.read_bytes().startswith(b"ONNX")
+
+
+def test_ensure_arcface_weights_extracts_from_tar(tmp_path):
+    destination = tmp_path / "arcface.onnx"
+    archive = tmp_path / "weights.tar.gz"
+
+    data = b"ONNX" + b"\x02" * 8192
+    info = tarfile.TarInfo("models/glint360k_r100.onnx")
+    info.size = len(data)
+
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.addfile(info, io.BytesIO(data))
 
     success = ensure_arcface_weights(destination, sources=[archive])
 
