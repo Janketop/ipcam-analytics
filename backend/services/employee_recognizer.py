@@ -60,7 +60,8 @@ class EmployeeRecognizer:
             threshold if threshold is not None else settings.face_recognition_threshold
         )
         model_name = normalize_encoding_model_name(
-            encoding_model or settings.face_recognition_model
+            encoding_model or settings.face_recognition_model,
+            allow_fallback=True,
         )
         self.encoding_model = model_name
         self._model_metadata = get_embedding_metadata(model_name)
@@ -149,7 +150,10 @@ class EmployeeRecognizer:
                 skipped += 1
                 continue
 
-            model_name = normalize_encoding_model_name(model or self.encoding_model)
+            model_name = normalize_encoding_model_name(
+                model or self.encoding_model,
+                allow_fallback=True,
+            )
             if model_name != self.encoding_model:
                 logger.debug(
                     "Пропускаю эмбеддинг сотрудника %s: модель %s != %s",

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional, Sequence
+from typing import Iterable, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -63,17 +63,26 @@ class _EmbeddingSpec:
     """Описание поддерживаемой модели для расчёта эмбеддингов."""
 
     canonical_name: str
-    input_size: tuple[int, int]
     embedding_dim: int
+    backend: str
+    input_size: Optional[Tuple[int, int]] = None
 
 
 _DEFAULT_MODEL_KEY = "arcface_insightface"
+_FALLBACK_MODEL_KEY = "dlib_resnet"
 
 _MODEL_SPECS: dict[str, _EmbeddingSpec] = {
     _DEFAULT_MODEL_KEY: _EmbeddingSpec(
         canonical_name=_DEFAULT_MODEL_KEY,
-        input_size=(112, 112),
         embedding_dim=512,
+        backend="onnx",
+        input_size=(112, 112),
+    ),
+    _FALLBACK_MODEL_KEY: _EmbeddingSpec(
+        canonical_name=_FALLBACK_MODEL_KEY,
+        embedding_dim=128,
+        backend="dlib",
+        input_size=None,
     ),
 }
 
@@ -83,7 +92,33 @@ _MODEL_ALIASES: dict[str, str] = {
     "arcface": _DEFAULT_MODEL_KEY,
     "insightface": _DEFAULT_MODEL_KEY,
     "r100": _DEFAULT_MODEL_KEY,
+    "dlib": _FALLBACK_MODEL_KEY,
+    "dlib_resnet": _FALLBACK_MODEL_KEY,
+    "small": _FALLBACK_MODEL_KEY,
+    "face_recognition": _FALLBACK_MODEL_KEY,
 }
+
+_FALLBACK_WARNED: set[str] = set()
+
+
+def _backend_available(spec: _EmbeddingSpec) -> bool:
+    if spec.backend == "onnx":
+        return face_embeddings_onnx.backend_ready()
+    if spec.backend == "dlib":
+        return face_recognition is not None
+    return False
+
+
+def _log_backend_fallback(source_key: str, target_key: str) -> None:
+    if source_key in _FALLBACK_WARNED:
+        return
+
+    _FALLBACK_WARNED.add(source_key)
+    logger.warning(
+        "Бэкенд эмбеддингов %s недоступен, переключаюсь на %s",
+        source_key,
+        target_key,
+    )
 
 
 def _resolve_model_key(name: Optional[str]) -> str:
@@ -103,31 +138,39 @@ def _resolve_model_key(name: Optional[str]) -> str:
     return _DEFAULT_MODEL_KEY
 
 
-def normalize_encoding_model_name(name: Optional[str]) -> str:
+def normalize_encoding_model_name(name: Optional[str], *, allow_fallback: bool = False) -> str:
     """Возвращает каноничное имя модели эмбеддингов."""
 
     key = _resolve_model_key(name)
-    return _MODEL_SPECS[key].canonical_name
+    spec = _MODEL_SPECS[key]
+    if not allow_fallback:
+        return spec.canonical_name
+
+    resolved = _get_model_spec(name)
+    return resolved.canonical_name
 
 
 def _get_model_spec(name: Optional[str]) -> _EmbeddingSpec:
     key = _resolve_model_key(name)
-    return _MODEL_SPECS[key]
+    spec = _MODEL_SPECS[key]
+    if _backend_available(spec):
+        return spec
+
+    if spec.backend == "onnx":
+        fallback = _MODEL_SPECS[_FALLBACK_MODEL_KEY]
+        if _backend_available(fallback):
+            _log_backend_fallback(spec.canonical_name, fallback.canonical_name)
+            return fallback
+
+    return spec
 
 
-def _embedding_backend_ready() -> bool:
-    return face_embeddings_onnx.backend_ready()
-
-
-def _run_embedding(
+def _run_onnx_embedding(
     image: np.ndarray,
     spec: _EmbeddingSpec,
     *,
     assume_bgr: bool,
 ) -> Optional[np.ndarray]:
-    if not _embedding_backend_ready():
-        return None
-
     if image is None or image.size == 0:
         return None
 
@@ -137,15 +180,57 @@ def _run_embedding(
         logger.debug("Не удалось привести изображение лица к RGB формату")
         return None
 
+    input_size = spec.input_size or (rgb.shape[1], rgb.shape[0])
+
     try:
         vector = face_embeddings_onnx.compute_embedding(
-            rgb, input_size=spec.input_size
+            rgb, input_size=input_size
         )
     except Exception:
         logger.exception("Ошибка при вычислении эмбеддинга лица ONNX-моделью")
         return None
 
     return np.asarray(vector, dtype=np.float32)
+
+
+def _run_dlib_embedding(
+    image: np.ndarray,
+    *,
+    num_jitters: int = 1,
+) -> Optional[np.ndarray]:
+    if face_recognition is None:
+        logger.error(
+            "Модуль face_recognition недоступен: %s",
+            _FACE_RECOGNITION_ERROR,
+        )
+        return None
+
+    if image is None or image.size == 0:
+        return None
+
+    height, width = image.shape[:2]
+    location = (0, width, height, 0)
+    try:
+        encodings = face_recognition.face_encodings(  # type: ignore[attr-defined]
+            image,
+            known_face_locations=[location],
+            num_jitters=max(int(num_jitters), 1),
+        )
+    except Exception:
+        logger.exception("Ошибка face_recognition.face_encodings")
+        return None
+
+    if not encodings:
+        logger.debug("face_recognition не вернуло эмбеддинг для переданного лица")
+        return None
+
+    vector = np.asarray(encodings[0], dtype=np.float32).reshape(-1)
+    norm = float(np.linalg.norm(vector))
+    if not np.isfinite(norm) or norm <= 0.0:
+        logger.debug("Получен нулевой эмбеддинг лица")
+        return None
+
+    return vector / norm
 
 
 def _build_embedding_result(
@@ -168,12 +253,18 @@ def get_embedding_metadata(name: Optional[str] = None) -> dict[str, object]:
     """Возвращает метаданные о поддерживаемой модели эмбеддингов."""
 
     spec = _get_model_spec(name)
+    if spec.backend == "onnx":
+        providers: Tuple[str, ...] = tuple(settings.onnx_providers)
+        onnx_model: Optional[str] = str(settings.face_recognition_onnx_model_path)
+    else:
+        providers = ("dlib",)
+        onnx_model = None
     return {
         "model": spec.canonical_name,
         "input_size": spec.input_size,
         "embedding_dim": spec.embedding_dim,
-        "providers": tuple(settings.onnx_providers),
-        "onnx_model": str(settings.face_recognition_onnx_model_path),
+        "providers": providers,
+        "onnx_model": onnx_model,
     }
 
 
@@ -255,16 +346,18 @@ def compute_face_embedding_from_array(
 ) -> Optional[FaceEmbeddingResult]:
     """Вычисляет эмбеддинг лица для массива пикселей."""
 
+    spec = _get_model_spec(encoding_model or settings.face_recognition_model)
+    if not _backend_available(spec):
+        logger.error(
+            "Бэкенд эмбеддингов %s недоступен", spec.canonical_name
+        )
+        return None
+
     if face_recognition is None:  # pragma: no cover - зависит от окружения
         logger.error(
             "Нельзя вычислить эмбеддинг: библиотека face_recognition недоступна",
         )
         return None
-
-    if not _embedding_backend_ready():
-        return None
-
-    spec = _get_model_spec(encoding_model or settings.face_recognition_model)
 
     if image is None or image.size == 0:
         return None
@@ -297,7 +390,10 @@ def compute_face_embedding_from_array(
         logger.debug("Выделенный регион лица пуст")
         return None
 
-    embedding = _run_embedding(face_region, spec, assume_bgr=False)
+    if spec.backend == "onnx":
+        embedding = _run_onnx_embedding(face_region, spec, assume_bgr=False)
+    else:
+        embedding = _run_dlib_embedding(face_region, num_jitters=num_jitters)
     return _build_embedding_result(embedding, spec, location=location)
 
 
@@ -346,16 +442,26 @@ def compute_face_embedding_for_bbox(
 ) -> Optional[FaceEmbeddingResult]:
     """Вычисляет эмбеддинг лица в ROI, заданном прямоугольником."""
 
-    if not _embedding_backend_ready():
-        return None
-
     spec = _get_model_spec(encoding_model or settings.face_recognition_model)
+    if not _backend_available(spec):
+        logger.error(
+            "Бэкенд эмбеддингов %s недоступен", spec.canonical_name
+        )
+        return None
 
     roi = _crop_with_padding(frame_bgr, bbox or [])
     if roi is None or roi.size == 0:
         return None
 
-    embedding = _run_embedding(roi, spec, assume_bgr=True)
+    if spec.backend == "onnx":
+        embedding = _run_onnx_embedding(roi, spec, assume_bgr=True)
+    else:
+        try:
+            roi_rgb = _ensure_rgb(roi, assume_bgr=True)
+        except ValueError:
+            logger.debug("Не удалось подготовить ROI лица для dlib-бэкенда")
+            return None
+        embedding = _run_dlib_embedding(roi_rgb, num_jitters=num_jitters)
     return _build_embedding_result(embedding, spec, location=None)
 
 
