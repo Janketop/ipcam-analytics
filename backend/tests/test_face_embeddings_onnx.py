@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from onnx import TensorProto, helper
 
 from backend.services import face_embeddings_onnx
 
@@ -86,7 +87,7 @@ def test_ensure_model_file_ready_invalid_header(monkeypatch, tmp_path):
 
 def test_ensure_model_file_ready_valid(tmp_path):
     valid = tmp_path / "valid.onnx"
-    valid.write_bytes(b"ONNX" + b"\x00" * 2048)
+    valid.write_bytes(_dummy_onnx_bytes())
 
     face_embeddings_onnx._ensure_model_file_ready(valid)  # type: ignore[attr-defined]
 
@@ -95,14 +96,14 @@ def test_ensure_model_file_ready_downloads_when_possible(monkeypatch, tmp_path):
     destination = tmp_path / "auto.onnx"
 
     def _fake_downloader(target: Path, *, sources):
-        target.write_bytes(b"ONNX" + b"\x01" * 4096)
+        target.write_bytes(_dummy_onnx_bytes())
         return True
 
     monkeypatch.setattr(face_embeddings_onnx, "ensure_arcface_weights", _fake_downloader)
 
     face_embeddings_onnx._ensure_model_file_ready(destination)  # type: ignore[attr-defined]
     assert destination.exists()
-    assert destination.read_bytes().startswith(b"ONNX")
+    assert face_embeddings_onnx.validate_arcface_model(destination)[0]
 
 
 def test_ensure_model_file_ready_respects_settings(monkeypatch, tmp_path):
@@ -112,7 +113,7 @@ def test_ensure_model_file_ready_respects_settings(monkeypatch, tmp_path):
 
     def _fake_downloader(target: Path, *, sources):
         captured["sources"] = tuple(sources)
-        target.write_bytes(b"ONNX" + b"\x02" * 4096)
+        target.write_bytes(_dummy_onnx_bytes())
         return True
 
     monkeypatch.setattr(face_embeddings_onnx, "ensure_arcface_weights", _fake_downloader)
@@ -126,3 +127,21 @@ def test_ensure_model_file_ready_respects_settings(monkeypatch, tmp_path):
 
     assert destination.exists()
     assert captured["sources"] == ("https://example.com/custom.onnx",)
+    assert face_embeddings_onnx.validate_arcface_model(destination)[0]
+
+
+def _dummy_onnx_bytes(vector_size: int = 2048) -> bytes:
+    dims = [1, vector_size]
+    weights = helper.make_tensor(
+        "W", TensorProto.FLOAT, dims, [0.0] * vector_size
+    )
+    node = helper.make_node("Add", inputs=["X", "W"], outputs=["Y"])
+    graph = helper.make_graph(
+        [node],
+        "test_graph",
+        [helper.make_tensor_value_info("X", TensorProto.FLOAT, dims)],
+        [helper.make_tensor_value_info("Y", TensorProto.FLOAT, dims)],
+        [weights],
+    )
+    model = helper.make_model(graph, producer_name="tests")
+    return model.SerializeToString()
