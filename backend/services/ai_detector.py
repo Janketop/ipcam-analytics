@@ -139,7 +139,6 @@ def _download_file(url: str, destination: Path) -> None:
 def _ensure_face_weights(*, allow_missing: bool = False) -> Optional[str]:
     """Возвращает путь до весов face-модели, скачивая их при необходимости."""
 
-    preferred_path = settings.face_detector_weights_path
     configured = (
         settings.face_detector_weights
         or settings.yolo_face_model
@@ -147,17 +146,31 @@ def _ensure_face_weights(*, allow_missing: bool = False) -> Optional[str]:
         or ""
     ).strip()
 
-    if not configured or preferred_path is None:
+    preferred_path: Optional[Path]
+    candidates: list[Path] = []
+
+    if configured:
+        try:
+            preferred_path = settings.resolve_project_path(configured)
+        except Exception:
+            preferred_path = Path(configured)
+    else:
+        preferred_path = settings.face_detector_weights_path
+
+    if preferred_path is None:
         message = "Не задан путь до весов детектора лиц"
         if allow_missing:
             logger.warning(message)
             return None
         raise ValueError(message)
 
-    candidates = [preferred_path]
-    raw_candidate = Path(configured)
-    if raw_candidate != preferred_path:
-        candidates.append(raw_candidate)
+    candidates.append(preferred_path)
+
+    # Если явный путь не задан, допускаем проверку запасных путей из настроек.
+    if not configured:
+        fallback_path = settings.face_detector_weights_path
+        if fallback_path is not None and fallback_path != preferred_path:
+            candidates.append(fallback_path)
 
     for candidate in candidates:
         try:
