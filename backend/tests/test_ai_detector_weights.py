@@ -125,6 +125,41 @@ def test_ensure_face_weights_returns_none_when_missing(monkeypatch, tmp_path, re
     assert attempted == ["https://invalid/file.pt"]
 
 
+def test_ensure_face_weights_skips_wrong_suffix(
+    monkeypatch, tmp_path, restore_settings, caplog, capsys
+):
+    destination = tmp_path / "face.onnx"
+    monkeypatch.setattr(settings, "yolo_face_model", str(destination))
+    monkeypatch.setattr(settings, "yolo_face_model_url", "https://example.org/face.pt")
+
+    monkeypatch.setattr(
+        ai_detector,
+        "_candidate_face_weight_urls",
+        lambda _manual: ["https://fallback.example/face.pt"],
+    )
+
+    captured_messages: list[str] = []
+
+    def fake_warning(message: str, *args, **kwargs) -> None:
+        try:
+            formatted = message % args if args else message
+        except Exception:  # pragma: no cover - защитный fallback
+            formatted = message
+        captured_messages.append(formatted)
+
+    monkeypatch.setattr(ai_detector.logger, "warning", fake_warning)
+
+    with caplog.at_level("WARNING"):
+        resolved = ai_detector._ensure_face_weights(allow_missing=True, expected_format="onnx")
+
+    assert resolved is None
+    combined_output = caplog.text + capsys.readouterr().out
+    assert (
+        "ожидается файл формата .onnx" in combined_output
+        or any("ожидается файл формата .onnx" in msg for msg in captured_messages)
+    )
+
+
 def test_ensure_ocr_reader_uses_configured_storage(monkeypatch, tmp_path, restore_settings):
     monkeypatch.setattr(settings, "easyocr_model_dir", str(tmp_path))
 
