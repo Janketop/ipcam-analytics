@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Iterable, Tuple
 
 import numpy as np
@@ -44,6 +45,33 @@ def _prepare_batch(image: np.ndarray, size: Tuple[int, int]) -> np.ndarray:
     return np.ascontiguousarray(batch, dtype=np.float32)
 
 
+def _ensure_model_file_ready(path: Path) -> None:
+    """Проверяет, что ONNX-файл выглядит как настоящая модель, а не заглушка."""
+
+    if not path.exists():
+        raise RuntimeError(
+            "Файл ONNX-модели эмбеддингов лиц %s не найден. "
+            "Укажите верный путь в переменной окружения "
+            "ONNX_FACE_CLASSIFIER_MODEL или FACE_RECOGNITION_ONNX_MODEL." % path
+        )
+
+    size = path.stat().st_size
+    if size < 1024:
+        raise RuntimeError(
+            "Файл %s слишком маленький (%d байт) и выглядит как заглушка. "
+            "Замените его на реальные веса ArcFace в формате ONNX." % (path, size)
+        )
+
+    with path.open("rb") as handle:
+        header = handle.read(4)
+
+    if header != b"ONNX":
+        raise RuntimeError(
+            "Файл %s не похож на ONNX-модель (ожидается заголовок 'ONNX'). "
+            "Замените его корректным файлом весов." % path
+        )
+
+
 @lru_cache(maxsize=1)
 def _get_session() -> "ort.InferenceSession":
     if ort is None:
@@ -54,6 +82,12 @@ def _get_session() -> "ort.InferenceSession":
     model_path = settings.face_recognition_onnx_model_path
     providers: Iterable[str]
     providers = settings.onnx_providers or ("CPUExecutionProvider",)
+
+    try:
+        _ensure_model_file_ready(model_path)
+    except RuntimeError as exc:
+        logger.error("%s", exc)
+        raise
 
     session_options = ort.SessionOptions()
     try:
