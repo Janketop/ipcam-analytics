@@ -136,7 +136,9 @@ def _download_file(url: str, destination: Path) -> None:
                 pass
 
 
-def _ensure_face_weights(*, allow_missing: bool = False) -> Optional[str]:
+def _ensure_face_weights(
+    *, allow_missing: bool = False, expected_format: Optional[str] = None
+) -> Optional[str]:
     """Возвращает путь до весов face-модели, скачивая их при необходимости."""
 
     configured = (
@@ -148,6 +150,13 @@ def _ensure_face_weights(*, allow_missing: bool = False) -> Optional[str]:
 
     preferred_path: Optional[Path]
     candidates: list[Path] = []
+    expected_suffix: Optional[str]
+
+    if expected_format:
+        normalized = expected_format.lower().lstrip(".")
+        expected_suffix = f".{normalized}" if normalized else None
+    else:
+        expected_suffix = None
 
     if configured:
         try:
@@ -173,6 +182,15 @@ def _ensure_face_weights(*, allow_missing: bool = False) -> Optional[str]:
             candidates.append(fallback_path)
 
     for candidate in candidates:
+        suffix = candidate.suffix.lower() if candidate.suffix else ""
+        if expected_suffix and suffix != expected_suffix:
+            logger.warning(
+                "Путь %s имеет расширение %s, ожидалось %s для детектора лиц",
+                candidate,
+                suffix or "(отсутствует)",
+                expected_suffix,
+            )
+            continue
         try:
             if candidate.is_file() and candidate.stat().st_size > 0:
                 return str(candidate)
@@ -187,6 +205,13 @@ def _ensure_face_weights(*, allow_missing: bool = False) -> Optional[str]:
     tried_urls = _candidate_face_weight_urls(manual_url)
 
     for url in tried_urls:
+        if expected_suffix and not url.lower().split("?")[0].endswith(expected_suffix):
+            logger.warning(
+                "Пропускаю загрузку %s: ожидается файл формата %s для детектора лиц",
+                url,
+                expected_suffix,
+            )
+            continue
         try:
             logger.info("Скачиваю веса детектора лиц из %s", url)
             _download_file(url, preferred_path)
@@ -320,6 +345,8 @@ class AIDetector:
 
         det_weights = settings.detector_weights_path()
         pose_weights = settings.pose_weights_path()
+        yolo_det_weights = settings.resolve_project_path(settings.yolo_det_model)
+        yolo_pose_weights = settings.resolve_project_path(settings.yolo_pose_model)
         self.device_preference = settings.yolo_device
         self.device = resolve_device(self.device_preference, settings.cuda_visible_devices)
         backend_choice = settings.inference_backend
@@ -331,21 +358,51 @@ class AIDetector:
         self.pose = None
 
         if self.det_backend == "onnx":
-            self.det = OnnxYoloDetector(
+            detector = OnnxYoloDetector(
                 det_weights,
                 class_names=settings.onnx_det_class_names,
             )
-        else:
-            self.det = YOLO(str(det_weights))
+            if getattr(detector, "session", None) is None:
+                reason = getattr(detector, "init_error", None) or "onnxruntime не создал сессию"
+                logger.error(
+                    "[%s] Не удалось активировать основной ONNX-детектор: %s",
+                    self.camera_name,
+                    reason,
+                )
+                self.det_backend = "yolo"
+            else:
+                self.det = detector
+
+        if self.det is None:
+            try:
+                self.det = YOLO(str(yolo_det_weights))
+            except Exception:
+                logger.exception(
+                    "[%s] Не удалось инициализировать YOLO-детектор по весам %s",
+                    self.camera_name,
+                    yolo_det_weights,
+                )
+                raise
 
         if self.requires_pose:
+            pose_initialized = False
             if self.det_backend == "onnx" or str(pose_weights).lower().endswith(".onnx"):
-                self.pose = OnnxPoseEstimator(
+                pose_estimator = OnnxPoseEstimator(
                     pose_weights,
                     kpt_shape=settings.onnx_pose_kpt_shape,
                 )
-            else:
-                self.pose = YOLO(str(pose_weights))
+                if getattr(pose_estimator, "session", None) is None:
+                    reason = getattr(pose_estimator, "init_error", None) or "onnxruntime не создал сессию"
+                    logger.error(
+                        "[%s] Не удалось активировать ONNX-позовый детектор: %s",
+                        self.camera_name,
+                        reason,
+                    )
+                else:
+                    self.pose = pose_estimator
+                    pose_initialized = True
+            if not pose_initialized:
+                self.pose = YOLO(str(yolo_pose_weights))
 
         self.face_conf = settings.yolo_face_conf
         self.face_detector_requested = (settings.face_detector_type or "yolo").strip().lower()
@@ -458,13 +515,32 @@ class AIDetector:
                     continue
 
             if kind in {"onnx", "yolo", "yolov8", "yolov8-face"}:
-                face_weights = _ensure_face_weights(allow_missing=True)
+                face_weights = _ensure_face_weights(
+                    allow_missing=True,
+                    expected_format="onnx" if kind == "onnx" else None,
+                )
                 if not face_weights:
                     continue
                 if str(face_weights).lower().endswith(".onnx"):
                     self.face_detector = OnnxYoloDetector(
                         face_weights, class_names=settings.onnx_face_class_names
                     )
+                    if getattr(self.face_detector, "session", None) is None:
+                        error_reason = getattr(self.face_detector, "init_error", None)
+                        if error_reason:
+                            logger.error(
+                                "[%s] Не удалось инициализировать ONNX-детектор лиц: %s",
+                                self.camera_name,
+                                error_reason,
+                            )
+                        else:
+                            logger.error(
+                                "[%s] Не удалось инициализировать ONNX-детектор лиц: "
+                                "onnxruntime не вернул сессию",
+                                self.camera_name,
+                            )
+                        self.face_detector = None
+                        continue
                     self.face_detector_kind = "onnx"
                     self.face_predict_device = None
                     logger.info(
@@ -505,7 +581,7 @@ class AIDetector:
                     )
                     return
 
-            if kind not in {"mediapipe", "yolo", "yolov8", "yolov8-face"}:
+            if kind not in {"mediapipe", "onnx", "yolo", "yolov8", "yolov8-face"}:
                 logger.warning(
                     "[%s] Неизвестный тип детектора лиц '%s'. Использую YOLO как запасной вариант.",
                     self.camera_name,
