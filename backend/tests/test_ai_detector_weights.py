@@ -105,13 +105,24 @@ def test_ensure_face_weights_returns_none_when_missing(monkeypatch, tmp_path, re
     monkeypatch.setattr(settings, "yolo_face_model", str(destination))
     monkeypatch.setattr(settings, "yolo_face_model_url", "")
 
-    monkeypatch.setattr(ai_detector, "_download_file", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError()))
-    monkeypatch.setattr(ai_detector, "_candidate_face_weight_urls", lambda _manual: ["https://invalid/file.pt"])
+    attempted: list[str] = []
+
+    def failing_download(url: str, *_args, **_kwargs) -> None:
+        attempted.append(url)
+        raise RuntimeError("fail")
+
+    monkeypatch.setattr(ai_detector, "_download_file", failing_download)
+    monkeypatch.setattr(
+        ai_detector,
+        "_candidate_face_weight_urls",
+        lambda _manual: ["https://invalid/file.pt"],
+    )
 
     with caplog.at_level("WARNING"):
         resolved = ai_detector._ensure_face_weights(allow_missing=True)
 
     assert resolved is None
+    assert attempted == ["https://invalid/file.pt"]
 
 
 def test_ensure_ocr_reader_uses_configured_storage(monkeypatch, tmp_path, restore_settings):
