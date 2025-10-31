@@ -10,6 +10,10 @@ from PIL import Image
 
 from backend.core.config import settings
 from backend.core.logger import logger
+from backend.services.arcface_weights import (
+    ensure_arcface_weights,
+    validate_arcface_model,
+)
 
 try:  # pragma: no cover - зависит от окружения выполнения
     import onnxruntime as ort
@@ -46,30 +50,38 @@ def _prepare_batch(image: np.ndarray, size: Tuple[int, int]) -> np.ndarray:
 
 
 def _ensure_model_file_ready(path: Path) -> None:
-    """Проверяет, что ONNX-файл выглядит как настоящая модель, а не заглушка."""
+    """Проверяет, что ONNX-файл валиден или пытается скачать готовые веса."""
 
-    if not path.exists():
-        raise RuntimeError(
-            "Файл ONNX-модели эмбеддингов лиц %s не найден. "
-            "Укажите верный путь в переменной окружения "
-            "ONNX_FACE_CLASSIFIER_MODEL или FACE_RECOGNITION_ONNX_MODEL." % path
+    valid, reason = validate_arcface_model(path)
+    if valid:
+        return
+
+    if reason:
+        logger.error(
+            "Файл ONNX-модели эмбеддингов лиц %s: %s. Пытаюсь скачать готовые веса ArcFace.",
+            path,
+            reason,
+        )
+    else:
+        logger.error(
+            "Файл ONNX-модели эмбеддингов лиц %s некорректен. Пытаюсь скачать готовые веса ArcFace.",
+            path,
         )
 
-    size = path.stat().st_size
-    if size < 1024:
-        raise RuntimeError(
-            "Файл %s слишком маленький (%d байт) и выглядит как заглушка. "
-            "Замените его на реальные веса ArcFace в формате ONNX." % (path, size)
+    if ensure_arcface_weights(path):
+        logger.info(
+            "Файл ArcFace автоматически подготовлен в %s (%.1f МБ)",
+            path,
+            path.stat().st_size / (1024 * 1024),
         )
+        return
 
-    with path.open("rb") as handle:
-        header = handle.read(4)
-
-    if header != b"ONNX":
-        raise RuntimeError(
-            "Файл %s не похож на ONNX-модель (ожидается заголовок 'ONNX'). "
-            "Замените его корректным файлом весов." % path
-        )
+    extra = f" ({reason})" if reason else ""
+    message = (
+        "Файл %s%s не удалось подготовить автоматически. "
+        "Замените его на реальные веса ArcFace в формате ONNX и укажите путь в настройках." % (path, extra)
+    )
+    raise RuntimeError(message)
 
 
 @lru_cache(maxsize=1)
