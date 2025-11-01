@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from threading import Lock
-from typing import Optional, Sequence, Union
+from typing import Iterable, Optional, Sequence, Union
 
 import numpy as np
 from sqlalchemy import select
@@ -15,6 +15,7 @@ from backend.models import Employee, FaceSample
 from backend.services.face_embeddings import (
     FaceEmbeddingResult,
     compute_face_embedding_for_bbox,
+    compute_face_embedding_from_snapshot,
     get_embedding_metadata,
     normalize_encoding_model_name,
 )
@@ -68,6 +69,9 @@ class EmployeeRecognizer:
         self.detection_model = "hog"
         self.num_jitters = 1
         self.padding = 0.15
+        self._expected_embedding_dim = int(
+            self._model_metadata.get("embedding_dim") or 0
+        )
 
         logger.debug(
             "Инициализирован распознаватель лиц (модель=%s, embedding_dim=%s, провайдеры=%s)",
@@ -124,6 +128,8 @@ class EmployeeRecognizer:
         with self.session_factory() as session:
             stmt = (
                 select(
+                    FaceSample.id,
+                    FaceSample.snapshot_url,
                     FaceSample.embedding,
                     FaceSample.embedding_dim,
                     FaceSample.embedding_model,
@@ -145,33 +151,60 @@ class EmployeeRecognizer:
         employee_names: list[str] = []
         skipped = 0
 
-        for blob, dim, model, employee_id, name in rows:
+        updates: dict[int, FaceEmbeddingResult] = {}
+        expected_dim = self._expected_embedding_dim
+
+        for sample_id, snapshot_url, blob, dim, model, employee_id, name in rows:
             if blob is None or dim is None or employee_id is None:
                 skipped += 1
                 continue
 
             model_name = normalize_encoding_model_name(
                 model or self.encoding_model,
-                allow_fallback=True,
+                allow_fallback=False,
             )
-            if model_name != self.encoding_model:
-                logger.debug(
-                    "Пропускаю эмбеддинг сотрудника %s: модель %s != %s",
-                    name,
-                    model_name,
-                    self.encoding_model,
-                )
-                skipped += 1
-                continue
-
             embedding = FaceEmbeddingResult.from_bytes(
                 blob, dim=dim, model=model_name
             )
+            vector = None
+            rebuilt_for_sample: Optional[FaceEmbeddingResult] = None
+
+            if model_name != self.encoding_model or embedding is None:
+                rebuilt = self._rebuild_embedding(
+                    sample_id,
+                    snapshot_url,
+                    name,
+                )
+                if rebuilt is None:
+                    skipped += 1
+                    continue
+                embedding = rebuilt
+                model_name = embedding.model
+                rebuilt_for_sample = rebuilt
+
             if embedding is None:
                 skipped += 1
                 continue
 
             vector = np.asarray(embedding.vector, dtype=np.float32).reshape(-1)
+
+            if expected_dim and vector.size != expected_dim:
+                rebuilt = self._rebuild_embedding(
+                    sample_id,
+                    snapshot_url,
+                    name,
+                )
+                if rebuilt is None:
+                    skipped += 1
+                    continue
+                embedding = rebuilt
+                vector = np.asarray(embedding.vector, dtype=np.float32).reshape(-1)
+                rebuilt_for_sample = rebuilt
+
+            if embedding.model != self.encoding_model:
+                skipped += 1
+                continue
+
             if self._embedding_dim is not None and vector.size != self._embedding_dim:
                 logger.debug(
                     "Размер эмбеддинга сотрудника %s (%s) не совпадает с %s",
@@ -182,9 +215,17 @@ class EmployeeRecognizer:
                 skipped += 1
                 continue
 
+            if rebuilt_for_sample is not None:
+                updates[sample_id] = rebuilt_for_sample
+
             vectors.append(vector)
             employee_ids.append(int(employee_id))
             employee_names.append(name)
+
+        if updates:
+            self._apply_embedding_updates(updates.items())
+            EmployeeRecognizer.notify_embeddings_updated()
+            global_version = _get_cache_version()
 
         if not vectors:
             if skipped:
@@ -230,6 +271,68 @@ class EmployeeRecognizer:
             num_jitters=self.num_jitters,
             padding=self.padding,
         )
+
+    def _rebuild_embedding(
+        self,
+        sample_id: int,
+        snapshot_url: Optional[str],
+        employee_name: str,
+    ) -> Optional[FaceEmbeddingResult]:
+        if not snapshot_url:
+            logger.debug(
+                "Не удалось пересчитать эмбеддинг сотрудника %s: отсутствует snapshot_url",
+                employee_name,
+            )
+            return None
+
+        logger.info(
+            "Пересчитываю эмбеддинг сотрудника %s (sample_id=%s) для модели %s",
+            employee_name,
+            sample_id,
+            self.encoding_model,
+        )
+        rebuilt = compute_face_embedding_from_snapshot(
+            snapshot_url,
+            encoding_model=self.encoding_model,
+            detection_model=self.detection_model,
+            num_jitters=self.num_jitters,
+        )
+        if rebuilt is None:
+            logger.warning(
+                "Не удалось пересчитать эмбеддинг сотрудника %s (sample_id=%s)",
+                employee_name,
+                sample_id,
+            )
+            return None
+
+        if self._expected_embedding_dim and rebuilt.dimension != self._expected_embedding_dim:
+            logger.warning(
+                "Пересчитанный эмбеддинг сотрудника %s имеет размер %s, ожидалось %s",
+                employee_name,
+                rebuilt.dimension,
+                self._expected_embedding_dim,
+            )
+            return None
+
+        return rebuilt
+
+    def _apply_embedding_updates(
+        self, updates: Iterable[tuple[int, FaceEmbeddingResult]]
+    ) -> None:
+        if not updates:
+            return
+
+        with self.session_factory() as session:
+            for sample_id, embedding in updates:
+                sample = session.get(FaceSample, sample_id)
+                if sample is None:
+                    continue
+                sample.set_embedding(
+                    embedding.as_bytes(),
+                    dim=embedding.dimension,
+                    model=embedding.model,
+                )
+            session.commit()
 
     def identify(
         self,
