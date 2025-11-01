@@ -1,5 +1,16 @@
 FROM nvidia/cuda:12.5.0-base-ubuntu22.04
 
+# Устанавливаем CUDA и cuDNN runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cuda-cudart-12-5 \
+    libcublas-12-5 \
+    libcublas-dev-12-5 \
+    libcudnn9-cuda-12 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Добавляем в переменные окружения пути к CUDA библиотекам
+ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}"
+
 ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
