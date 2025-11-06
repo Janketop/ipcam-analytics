@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
-from pydantic import AnyUrl, BaseModel, Field, constr, root_validator, validator
+from pydantic import AnyUrl, BaseModel, Field, constr, field_validator, model_validator
 from sqlalchemy.orm import Session
 
 from backend.core.config import settings
@@ -29,14 +29,20 @@ class ZonePolygon(BaseModel):
 
     id: Optional[constr(strip_whitespace=True, min_length=1)] = None  # type: ignore[valid-type]
     name: Optional[constr(strip_whitespace=True, min_length=1)] = None  # type: ignore[valid-type]
-    points: List[ZonePoint] = Field(default_factory=list, min_items=3)
+    points: List[ZonePoint] = Field(default_factory=list, min_length=3)
 
-    @root_validator(pre=True)
-    def _ensure_points(cls, values: Dict[str, Any]) -> Dict[str, Any]:
-        points = values.get("points")
+    @model_validator(mode="before")
+    @classmethod
+    def _ensure_points(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            points = data.get("points")
+        else:
+            points = getattr(data, "points", None)
+
         if not points:
             raise ValueError("Зона должна содержать минимум три точки")
-        return values
+
+        return data
 
 
 class CameraCreateRequest(BaseModel):
@@ -50,7 +56,8 @@ class CameraCreateRequest(BaseModel):
     idle_alert_time: int = Field(default=settings.idle_alert_time, ge=10, le=86400)
     zones: List[ZonePolygon] = Field(default_factory=list)
 
-    @validator("rtsp_url")
+    @field_validator("rtsp_url")
+    @classmethod
     def ensure_rtsp_scheme(cls, value: AnyUrl) -> AnyUrl:
         if value.scheme.lower() not in _ALLOWED_STREAM_SCHEMES:
             allowed = ", ".join(sorted(_ALLOWED_STREAM_SCHEMES))
@@ -71,7 +78,8 @@ class CameraUpdateRequest(BaseModel):
     idle_alert_time: Optional[int] = Field(default=None, ge=10, le=86400)
     zones: Optional[List[ZonePolygon]]
 
-    @validator("rtsp_url")
+    @field_validator("rtsp_url")
+    @classmethod
     def ensure_rtsp_scheme(cls, value: AnyUrl | None) -> AnyUrl | None:
         if value is None:
             return value
