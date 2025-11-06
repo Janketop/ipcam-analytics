@@ -27,7 +27,7 @@ RUN apt-get update \
         python3.11-venv \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
     && python3 -m ensurepip --upgrade \
-    && python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && python3 -m pip install --no-cache-dir --upgrade pip "setuptools<81" wheel \
     && ln -sf /usr/bin/python3 /usr/local/bin/python \
     && apt-get purge -y --auto-remove gnupg software-properties-common \
     && rm -rf /var/lib/apt/lists/*
