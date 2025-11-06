@@ -70,7 +70,11 @@ export const LiveStreamViewer = ({ cameras, normalizedApiBase }: LiveStreamViewe
   }, [liveExpanded]);
 
   if (!selectedCamera) {
-    return <p style={{ margin: 0 }}>Камеры не настроены. Добавьте RTSP в <code>.env</code>.</p>;
+    return (
+      <p style={{ margin: 0 }}>
+        Камеры не настроены. Добавьте RTSP/HTTP поток в <code>.env</code>.
+      </p>
+    );
   }
 
   return (
