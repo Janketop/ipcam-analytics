@@ -1,1 +1,3 @@
-Placeholder ONNX graph for detector. Replace with exported weights.
+version https://git-lfs.github.com/spec/v1
+oid sha256:2d27428062499ea12ce4b0264cd4bee4c00f2740c52231918a8e685dd23d3eb6
+size 68
