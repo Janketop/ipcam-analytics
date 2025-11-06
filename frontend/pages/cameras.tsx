@@ -55,7 +55,7 @@ const CamerasPage = () => {
     const idleSeconds = Number.parseInt(idleAlertTime.trim(), 10);
 
     if (!name || !url) {
-      setFormError('Введите название и RTSP-адрес камеры.');
+      setFormError('Введите название и URL потока (RTSP или HTTP/HTTPS).');
       setFormSuccess(null);
       return;
     }
@@ -516,8 +516,8 @@ const CamerasPage = () => {
     <Layout title="IP-CAM Analytics — Камеры">
       <h1>Управление камерами</h1>
       <p style={{ maxWidth: 640, color: '#475569' }}>
-        Здесь можно подключить новые RTSP-потоки и управлять существующими. Камеры запускаются и останавливаются
-        автоматически, когда появляются в списке.
+        Здесь можно подключить новые потоки (RTSP, RTSPS, HTTP/MJPEG) и управлять существующими. Камеры запускаются и
+        останавливаются автоматически, когда появляются в списке.
       </p>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '24px 0', flexWrap: 'wrap', gap: 12 }}>
@@ -593,7 +593,9 @@ const CamerasPage = () => {
             />
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <span style={{ fontSize: 14, color: '#0f172a', fontWeight: 600 }}>RTSP URL</span>
+            <span style={{ fontSize: 14, color: '#0f172a', fontWeight: 600 }}>
+              URL потока (RTSP/HTTP)
+            </span>
             <input
               type="text"
               value={newCameraUrl}

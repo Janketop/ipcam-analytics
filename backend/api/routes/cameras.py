@@ -14,6 +14,8 @@ from backend.core.config import settings
 from backend.core.dependencies import get_ingest_manager, get_session
 from backend.models import Camera
 
+_ALLOWED_STREAM_SCHEMES = {"rtsp", "rtsps", "http", "https", "rtmp"}
+
 
 class ZonePoint(BaseModel):
     """Координата вершины полигона в нормализованных значениях."""
@@ -50,8 +52,11 @@ class CameraCreateRequest(BaseModel):
 
     @validator("rtsp_url")
     def ensure_rtsp_scheme(cls, value: AnyUrl) -> AnyUrl:
-        if value.scheme.lower() != "rtsp":
-            raise ValueError("URL должен использовать схему rtsp")
+        if value.scheme.lower() not in _ALLOWED_STREAM_SCHEMES:
+            allowed = ", ".join(sorted(_ALLOWED_STREAM_SCHEMES))
+            raise ValueError(
+                f"URL должен использовать одну из поддерживаемых схем: {allowed}"
+            )
         return value
 
 
@@ -70,8 +75,11 @@ class CameraUpdateRequest(BaseModel):
     def ensure_rtsp_scheme(cls, value: AnyUrl | None) -> AnyUrl | None:
         if value is None:
             return value
-        if value.scheme.lower() != "rtsp":
-            raise ValueError("URL должен использовать схему rtsp")
+        if value.scheme.lower() not in _ALLOWED_STREAM_SCHEMES:
+            allowed = ", ".join(sorted(_ALLOWED_STREAM_SCHEMES))
+            raise ValueError(
+                f"URL должен использовать одну из поддерживаемых схем: {allowed}"
+            )
         return value
 
 
