@@ -1,15 +1,15 @@
-FROM nvidia/cuda:12.5.0-base-ubuntu22.04
+FROM nvidia/cuda:13.0.0-base-ubuntu22.04
 
 # Устанавливаем CUDA и cuDNN runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    cuda-cudart-12-5 \
-    cuda-libraries-12-5 \
-    cuda-nvrtc-12-5 \
-    libcublas-12-5 \
-    libcublas-dev-12-5 \
-    libcurand-12-5 \
-    libcurand-dev-12-5 \
-    libcudnn9-cuda-12 \
+    cuda-cudart-13-0 \
+    cuda-libraries-13-0 \
+    cuda-nvrtc-13-0 \
+    libcublas-13-0 \
+    libcublas-dev-13-0 \
+    libcurand-13-0 \
+    libcurand-dev-13-0 \
+    libcudnn9-cuda-13 \
     && rm -rf /var/lib/apt/lists/*
 
 # Добавляем в переменные окружения пути к CUDA библиотекам
@@ -38,7 +38,7 @@ RUN apt-get update \
 
 ENV PIP_DEFAULT_TIMEOUT=600 \
     PIP_RETRIES=10 \
-    PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu124
+    PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu130
 
 WORKDIR /app
 
