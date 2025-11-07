@@ -12,7 +12,9 @@ services:
       - ./db/init:/docker-entrypoint-initdb.d
 
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     env_file: .env
     depends_on:
       - db
@@ -20,9 +22,6 @@ services:
       - "${BACKEND_PORT}:8000"
     volumes:
       - ./backend:/app/backend
-    environment:
-      NVIDIA_VISIBLE_DEVICES: all
-      NVIDIA_DRIVER_CAPABILITIES: compute,utility
     deploy:
       resources:
         reservations:
@@ -30,6 +29,10 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
   frontend:
     build: ./frontend
