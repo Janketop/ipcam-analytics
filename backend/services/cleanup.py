@@ -288,23 +288,24 @@ def cleanup_expired_events_and_snapshots(
         for sample_id in sample_ids
     }
 
+    removed_face_samples_for_missing_snapshots = 0
     if missing_snapshot_face_sample_ids:
         with session_factory() as session:
-            (
+            removed_face_samples_for_missing_snapshots = (
                 session.query(FaceSample)
                 .filter(FaceSample.id.in_(missing_snapshot_face_sample_ids))
-                .update({FaceSample.snapshot_url: None}, synchronize_session=False)
+                .delete(synchronize_session=False)
             )
             session.commit()
         logger.warning(
-            "Обнаружено %d карточек лиц без файлов снимков, ссылки обнулены",
-            len(missing_snapshot_face_sample_ids),
+            "Обнаружено %d карточек лиц без файлов снимков, записи удалены",
+            removed_face_samples_for_missing_snapshots,
         )
 
-    deleted_face_samples = 0
+    deleted_face_samples = removed_face_samples_for_missing_snapshots
     if face_sample_ids:
         with session_factory() as session:
-            deleted_face_samples = (
+            deleted_face_samples += (
                 session.query(FaceSample)
                 .filter(FaceSample.id.in_(face_sample_ids))
                 .delete(synchronize_session=False)
