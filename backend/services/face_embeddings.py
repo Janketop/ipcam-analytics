@@ -11,6 +11,7 @@ from backend.core.config import settings
 from backend.core.logger import logger
 from backend.core.paths import BACKEND_DIR, SNAPSHOT_DIR
 from backend.services import face_embeddings_onnx
+from backend.services.onnx_inference import resolve_providers
 
 try:  # pragma: no cover - импорт может падать только в рантайме контейнера
     import face_recognition  # type: ignore
@@ -254,7 +255,7 @@ def get_embedding_metadata(name: Optional[str] = None) -> dict[str, object]:
 
     spec = _get_model_spec(name)
     if spec.backend == "onnx":
-        providers: Tuple[str, ...] = tuple(settings.onnx_providers)
+        providers: Tuple[str, ...] = tuple(resolve_providers(settings.onnx_providers))
         onnx_model: Optional[str] = str(settings.face_recognition_onnx_model_path)
     else:
         providers = ("dlib",)

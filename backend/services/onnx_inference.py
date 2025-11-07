@@ -1,9 +1,12 @@
 """Утилиты для инференса ONNX-моделей и совместимости с кодом детектора."""
 from __future__ import annotations
 
+import importlib
+import importlib.util
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Iterable, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
@@ -137,6 +140,81 @@ def _resolve_graph_optimization_level() -> "ort.GraphOptimizationLevel":
     return ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
 
 
+_WARNED_PROVIDERS: Set[str] = set()
+
+
+@lru_cache(maxsize=1)
+def _torch_cuda_is_available() -> bool:
+    """Определяет наличие CUDA-устройства через PyTorch (кешируется)."""
+
+    if importlib.util.find_spec("torch") is None:
+        return False
+
+    try:
+        torch = importlib.import_module("torch")
+    except Exception:
+        return False
+
+    try:
+        is_available = getattr(torch.cuda, "is_available", lambda: False)
+        return bool(is_available())
+    except Exception:
+        return False
+
+
+def resolve_providers(requested: Optional[Sequence[str]]) -> List[str]:
+    """Фильтрует список провайдеров ONNX с учётом доступности CUDA."""
+
+    if not requested:
+        requested = ("CPUExecutionProvider",)
+
+    sanitized = [item for item in requested if item]
+
+    available_runtime: Set[str] = set()
+    if ort is not None:
+        try:
+            available_runtime = set(ort.get_available_providers())
+        except Exception as exc:  # pragma: no cover - зависит от окружения
+            logger.debug(
+                "Не удалось получить доступные провайдеры onnxruntime: %s",
+                exc,
+            )
+
+    filtered: List[str] = []
+    cuda_available = _torch_cuda_is_available()
+
+    for provider in sanitized:
+        if available_runtime and provider not in available_runtime:
+            logger.debug(
+                "ONNXRuntime не сообщает провайдера %s, он будет пропущен",
+                provider,
+            )
+            continue
+
+        if provider.upper().startswith("CUDA") and not cuda_available:
+            if provider not in _WARNED_PROVIDERS:
+                logger.warning(
+                    "Провайдер %s отключён: CUDA-устройство не обнаружено. "
+                    "Используется CPUExecutionProvider.",
+                    provider,
+                )
+                _WARNED_PROVIDERS.add(provider)
+            continue
+
+        if provider not in filtered:
+            filtered.append(provider)
+
+    if not filtered:
+        fallback = "CPUExecutionProvider"
+        if available_runtime and fallback not in available_runtime:
+            fallback_candidates = [item for item in available_runtime if item]
+            if fallback_candidates:
+                fallback = fallback_candidates[0]
+        filtered.append(fallback)
+
+    return filtered
+
+
 def create_session(model_path: str | Path, *, providers: Optional[Sequence[str]] = None) -> "ort.InferenceSession":
     """Создаёт сессию ONNXRuntime с запрошенными провайдерами."""
 
@@ -145,7 +223,7 @@ def create_session(model_path: str | Path, *, providers: Optional[Sequence[str]]
     if providers is None:
         providers = settings.onnx_providers
 
-    provider_list = list(providers)
+    provider_list = resolve_providers(providers)
     session_options = ort.SessionOptions()
     try:
         session_options.graph_optimization_level = _resolve_graph_optimization_level()
@@ -511,4 +589,5 @@ __all__ = [
     "letterbox_resize",
     "decode_yolo_output",
     "decode_pose_output",
+    "resolve_providers",
 ]
