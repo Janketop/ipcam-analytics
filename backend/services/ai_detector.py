@@ -877,6 +877,12 @@ class AIDetector:
     def process_frame(
         self, frame
     ) -> Tuple[bool, float, Any, Any, List[Dict[str, Any]], List[Dict[str, Any]]]:
+        # === DEBUG_PATCH_ADDED ===
+        logger.debug(
+            "[%s] DEBUG: Начало process_frame, размер кадра: %s",
+            self.camera_name,
+            frame.shape if frame is not None else "None",
+        )
         detect_person = self.detect_person
         detect_car = self.detect_car
         enable_phone = bool(getattr(self, "enable_phone_detection", False) and detect_person)
@@ -896,6 +902,44 @@ class AIDetector:
             if self.predict_device:
                 det_kwargs["device"] = self.predict_device
             det_res = self.det(frame, **det_kwargs)[0]
+            # DEBUG: Логирование результатов детектора
+            if det_res is not None:
+                boxes = getattr(det_res, "boxes", None)
+                if boxes is not None:
+                    logger.debug(
+                        "[%s] DEBUG: Детектор вернул %d боксов",
+                        self.camera_name,
+                        len(boxes),
+                    )
+                    for i, box in enumerate(boxes):
+                        try:
+                            cls_idx = int(box.cls[0])
+                            conf = float(box.conf[0])
+                            label = self.det_names.get(cls_idx, "unknown")
+                            logger.debug(
+                                "[%s] DEBUG: Бокс %d: %s (conf: %.3f)",
+                                self.camera_name,
+                                i,
+                                label,
+                                conf,
+                            )
+                        except Exception as exc:  # pragma: no cover - только диагностика
+                            logger.debug(
+                                "[%s] DEBUG: Ошибка парсинга бокса %d: %s",
+                                self.camera_name,
+                                i,
+                                exc,
+                            )
+                else:
+                    logger.debug(
+                        "[%s] DEBUG: Детектор не вернул боксов",
+                        self.camera_name,
+                    )
+            else:
+                logger.debug(
+                    "[%s] DEBUG: Детектор вернул None",
+                    self.camera_name,
+                )
 
         face_detections: List[Dict[str, Any]] = []
         if detect_person and self.face_detector is not None:
@@ -1498,6 +1542,16 @@ class AIDetector:
         if detect_person:
             snap_src = vis if (self.visualize and vis is not None) else frame
             snapshot = prepare_snapshot(snap_src, self.face_blur, self.face_cascade)
+
+        # DEBUG: Финальные результаты
+        logger.info(
+            "[%s] DEBUG: ИТОГО - люди: %d, машины: %d, телефон: %s (conf: %.3f)",
+            self.camera_name,
+            len(people_data),
+            len(car_events),
+            phone_usage,
+            best_conf,
+        )
 
         return (
             phone_usage,
