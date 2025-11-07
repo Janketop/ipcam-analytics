@@ -130,7 +130,7 @@ def cleanup_expired_events_and_snapshots(
             select(Event.id, Event.snapshot_url).where(Event.snapshot_url.is_not(None))
         ).all()
 
-        face_sample_rows = session.execute(
+        expired_face_sample_rows = session.execute(
             select(FaceSample.id, FaceSample.snapshot_url).where(
                 or_(
                     FaceSample.status.in_(FACE_SAMPLE_UNUSED_STATUSES),
@@ -139,6 +139,12 @@ def cleanup_expired_events_and_snapshots(
                         FaceSample.captured_at < face_sample_cutoff_dt,
                     ),
                 )
+            )
+        ).all()
+
+        face_sample_snapshot_rows = session.execute(
+            select(FaceSample.id, FaceSample.snapshot_url).where(
+                FaceSample.snapshot_url.is_not(None)
             )
         ).all()
 
@@ -185,6 +191,7 @@ def cleanup_expired_events_and_snapshots(
             try:
                 file_path.unlink()
                 deleted_snapshots += 1
+                existing_files.discard(file_path.name)
             except FileNotFoundError as exc:
                 logger.warning(
                     "Не удалось удалить файл %s: файл уже удалён (%s)",
@@ -239,7 +246,7 @@ def cleanup_expired_events_and_snapshots(
 
     face_sample_ids: Set[int] = set()
     processed_face_files: Set[str] = set()
-    for sample_id, url in face_sample_rows:
+    for sample_id, url in expired_face_sample_rows:
         face_sample_ids.add(sample_id)
         if not isinstance(url, str):
             continue
@@ -262,6 +269,38 @@ def cleanup_expired_events_and_snapshots(
                 exc,
             )
         
+    face_sample_snapshots: Dict[str, List[int]] = defaultdict(list)
+    for sample_id, url in face_sample_snapshot_rows:
+        if not isinstance(url, str):
+            continue
+        url = url.strip()
+        if not url:
+            continue
+        filename = Path(url).name
+        if not filename:
+            continue
+        face_sample_snapshots[filename].append(sample_id)
+
+    missing_snapshot_face_sample_ids = {
+        sample_id
+        for filename, sample_ids in face_sample_snapshots.items()
+        if filename not in existing_files
+        for sample_id in sample_ids
+    }
+
+    if missing_snapshot_face_sample_ids:
+        with session_factory() as session:
+            (
+                session.query(FaceSample)
+                .filter(FaceSample.id.in_(missing_snapshot_face_sample_ids))
+                .update({FaceSample.snapshot_url: None}, synchronize_session=False)
+            )
+            session.commit()
+        logger.warning(
+            "Обнаружено %d карточек лиц без файлов снимков, ссылки обнулены",
+            len(missing_snapshot_face_sample_ids),
+        )
+
     deleted_face_samples = 0
     if face_sample_ids:
         with session_factory() as session:
