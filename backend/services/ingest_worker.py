@@ -826,6 +826,7 @@ class IngestWorker(Thread):
         self.frame_durations.clear()
         logger.info("[%s] Ingest-воркер запущен", self.name)
         self._broadcast_status(force=True)
+        logger.info("[%s] Подключение к камере по URL: %s", self.name, self.url)
         while not self.stop_flag:
             self._broadcast_status()
             cap = cv2.VideoCapture(self.url)
@@ -844,6 +845,18 @@ class IngestWorker(Thread):
                     exc_info=True,
                 )
             if not cap.isOpened():
+                logger.error(
+                    "[%s] НЕВОЗМОЖНО ОТКРЫТЬ ВИДЕОПОТОК: %s",
+                    self.name,
+                    self.url,
+                )
+                logger.error(
+                    "[%s] Проверьте: 1) URL, 2) Аутентификацию, 3) Сетевую доступность",
+                    self.name,
+                )
+            else:
+                logger.info("[%s] Видеопоток успешно открыт", self.name)
+            if not cap.isOpened():
                 logger.warning(
                     "[%s] Не удалось открыть поток, повторное подключение через %.1f с",
                     self.name,
@@ -854,7 +867,6 @@ class IngestWorker(Thread):
                 time.sleep(reconnect_delay)
                 continue
 
-            logger.info("[%s] Ingest-воркер успешно подключился к потоку", self.name)
             failed_reads = 0
             reconnect_needed = False
 
