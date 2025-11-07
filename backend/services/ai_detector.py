@@ -28,7 +28,11 @@ except Exception:  # pragma: no cover - mediapipe не является обяз
 
 from backend.core.config import settings
 from backend.core.logger import logger
-from backend.services.onnx_inference import OnnxPoseEstimator, OnnxYoloDetector
+from backend.services.onnx_inference import (
+    OnnxPoseEstimator,
+    OnnxYoloDetector,
+    resolve_providers,
+)
 from backend.services.snapshots import load_face_cascade, prepare_snapshot
 
 if TYPE_CHECKING:
@@ -372,10 +376,11 @@ class AIDetector:
                 self.camera_name,
                 det_weights,
             )
+            resolved_providers = resolve_providers(settings.onnx_providers)
             logger.info(
                 "[%s] ONNX провайдеры: %s",
                 self.camera_name,
-                settings.onnx_providers,
+                resolved_providers,
             )
             detector = OnnxYoloDetector(
                 det_weights,
@@ -458,7 +463,7 @@ class AIDetector:
         if model_device is not None:
             self.actual_device = str(model_device)
         elif self.det_backend == "onnx":
-            providers = settings.onnx_providers
+            providers = resolve_providers(settings.onnx_providers)
             self.actual_device = ",".join(providers)
         else:
             self.actual_device = str(self.device)

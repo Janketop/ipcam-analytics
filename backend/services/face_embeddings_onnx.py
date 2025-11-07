@@ -14,6 +14,7 @@ from backend.services.arcface_weights import (
     ensure_arcface_weights,
     validate_arcface_model,
 )
+from backend.services.onnx_inference import resolve_providers
 
 try:  # pragma: no cover - зависит от окружения выполнения
     import onnxruntime as ort
@@ -93,7 +94,7 @@ def _get_session() -> "ort.InferenceSession":
 
     model_path = settings.face_recognition_onnx_model_path
     providers: Iterable[str]
-    providers = settings.onnx_providers or ("CPUExecutionProvider",)
+    providers = resolve_providers(settings.onnx_providers)
 
     try:
         _ensure_model_file_ready(model_path)
