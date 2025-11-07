@@ -79,6 +79,28 @@ yolo export model=runs/detect/train/weights/best.pt format=onnx device=cpu
 
 Контейнер backend собирается на базе CUDA-образа и устанавливает `onnxruntime-gpu`, поэтому дополнительные зависимости ставить не нужно. В `docker-compose.yml` уже прописано пробрасывание GPU (`deploy.resources.reservations.devices` + переменные `NVIDIA_VISIBLE_DEVICES`), достаточно запустить `docker compose up --build` на машине с установленным NVIDIA Container Toolkit.
 
+#### Настройка GPU в Windows + WSL2
+
+Чтобы ONNX Runtime действительно задействовал видеокарту внутри контейнера, проверьте окружение целиком — от драйвера Windows до параметров Docker.
+
+1. **Драйвер на стороне Windows.** Установите свежую версию NVIDIA Game Ready / Studio Driver с поддержкой WSL2 и CUDA (минимум серия R495). После перезагрузки убедитесь, что `nvidia-smi` доступна из PowerShell.
+2. **CUDA Toolkit внутри WSL2.** Следуйте официальной инструкции NVIDIA: удалите устаревшие ключи GPG, установите пакет `cuda-repo-wsl-ubuntu-<версия>.deb`, выполните `sudo apt-get update` и `sudo apt-get install cuda-toolkit-12-4` (или совместимую версию 12.x). Проверьте работу `nvidia-smi` и `nvcc --version` уже из WSL.
+3. **cuDNN 9.x.** Если пакет из репозитория `apt` не ставится, скачайте tar-архив с сайта NVIDIA, распакуйте и вручную скопируйте заголовки/библиотеки в `/usr/local/cuda/`. Обновите переменные `PATH` и `LD_LIBRARY_PATH`, чтобы `libcudnn*.so` лежали в зоне видимости.
+4. **Запуск Docker-контейнера с GPU.** При использовании `docker compose up` секция `deploy.resources.reservations.devices` игнорируется (она нужна только в Docker Swarm). В самом `docker-compose.yml` добавьте для сервиса backend блок
+
+   ```yaml
+   device_requests:
+     - driver: nvidia
+       count: all
+       capabilities: [gpu]
+   ```
+
+   либо запускайте контейнер напрямую командой `docker run --gpus all ...`. Убедитесь, что на хосте установлен NVIDIA Container Toolkit, иначе опция `--gpus` будет недоступна.
+5. **Проверка внутри контейнера.** Подключитесь в `backend` и выполните `python -c "import onnxruntime as ort; print(ort.get_available_providers())"`. В ответе обязательно должен присутствовать `CUDAExecutionProvider` (порядок и сопутствующие провайдеры могут отличаться). Если строки `CUDAExecutionProvider` нет — вернитесь к настройке драйверов/библиотек.
+6. **Логи сервиса.** При старте `backend` в логи выводятся доступные провайдеры. Сообщение вида «Провайдер CUDAExecutionProvider отключён: CUDA-устройство не обнаружено. Используется CPUExecutionProvider.» означает, что PyTorch не нашёл CUDA и инференс идёт на CPU.
+
+При корректной установке драйверов, CUDA Toolkit 12.x и cuDNN 9.x, а также при запуске контейнера с доступом к GPU, все ONNX-модели (детектор, поза, ArcFace) будут выполняться на видеокарте без дополнительных действий в коде.
+
 ### Обучение собственного детектора лиц
 - Для точного распознавания лиц можно дообучить модель Ultralytics YOLO11m на датасете WIDERFace: `python -m backend.utils.train_face_detector --device cuda:0 --epochs 50` (запускайте в контейнере backend).
 - Скрипт автоматически скачает и конвертирует датасет в формат YOLO, запустит обучение и положит лучшие веса в `backend/weights/yolov11m-face.pt`. При повторных запусках используйте флаг `--skip-download`, чтобы не скачивать архивы заново; затем обновите `FACE_DETECTOR_WEIGHTS` (или, для обратной совместимости, `YOLO_FACE_MODEL`), если хотите использовать дообученный файл вместо базового `yolov11m-face.pt`.
