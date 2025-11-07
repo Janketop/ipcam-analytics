@@ -230,13 +230,50 @@ def decode_yolo_output(
 
     if output.ndim == 3:
         output = np.squeeze(output, axis=0)
-    if output.ndim != 2 or output.shape[1] < 6:
+    if output.ndim != 2:
         return []
 
-    cx = output[:, 0]
-    cy = output[:, 1]
-    w = output[:, 2]
-    h = output[:, 3]
+    rows, cols = output.shape
+
+    # Определяем, где находятся признаки (5 + C) и где количество предсказаний.
+    # В большинстве моделей YOLO число признаков заметно меньше числа боксов,
+    # однако встречаются модели, экспортированные в формат (5 + C, N). Для них
+    # поворачиваем матрицу, сохранив исходный поддерживаемый вариант "N × (5+C)".
+    if cols < 6 and rows >= 6:
+        output = output.T
+        rows, cols = output.shape
+    elif rows < cols:
+        feature_guess = rows - 5
+        aspect = cols / max(rows, 1)
+        if 1 <= feature_guess <= 4096 and aspect >= 8:
+            output = output.T
+            rows, cols = output.shape
+
+    if cols < 6:
+        return []
+
+    sample = output[: min(256, rows)]
+    xyxy_layout = bool(
+        sample.size >= 4
+        and np.all(sample[:, 2] >= sample[:, 0])
+        and np.all(sample[:, 3] >= sample[:, 1])
+    )
+
+    if xyxy_layout:
+        x1 = output[:, 0]
+        y1 = output[:, 1]
+        x2 = output[:, 2]
+        y2 = output[:, 3]
+        cx = (x1 + x2) / 2.0
+        cy = (y1 + y2) / 2.0
+        w = np.maximum(0.0, x2 - x1)
+        h = np.maximum(0.0, y2 - y1)
+    else:
+        cx = output[:, 0]
+        cy = output[:, 1]
+        w = output[:, 2]
+        h = output[:, 3]
+
     obj_conf = output[:, 4]
     class_scores = output[:, 5:]
 
