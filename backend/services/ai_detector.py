@@ -367,9 +367,25 @@ class AIDetector:
         self.pose = None
 
         if self.det_backend == "onnx":
+            logger.info(
+                "[%s] Попытка инициализации ONNX-детектора. Веса: %s",
+                self.camera_name,
+                det_weights,
+            )
+            logger.info(
+                "[%s] ONNX провайдеры: %s",
+                self.camera_name,
+                settings.onnx_providers,
+            )
             detector = OnnxYoloDetector(
                 det_weights,
                 class_names=settings.onnx_det_class_names,
+            )
+            logger.info(
+                "[%s] ONNX детектор создан. Сессия: %s, Ошибка: %s",
+                self.camera_name,
+                getattr(detector, "session", None),
+                getattr(detector, "init_error", None),
             )
             if getattr(detector, "session", None) is None:
                 reason = getattr(detector, "init_error", None) or "onnxruntime не создал сессию"
