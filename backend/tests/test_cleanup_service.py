@@ -39,8 +39,8 @@ class TestFaceSample(TestBase):
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-def test_cleanup_clears_missing_unverified_snapshot(tmp_path, monkeypatch):
-    """Если файл карточки лица отсутствует, ссылка должна обнуляться."""
+def test_cleanup_removes_face_sample_without_snapshot(tmp_path, monkeypatch):
+    """Если файл карточки лица отсутствует, запись должна удаляться."""
 
     db_path = tmp_path / "test.sqlite"
     engine = create_engine(f"sqlite:///{db_path}", future=True)
@@ -82,7 +82,6 @@ def test_cleanup_clears_missing_unverified_snapshot(tmp_path, monkeypatch):
     with session_factory() as session:
         updated = session.get(TestFaceSample, sample_id)
 
-    assert updated is not None
-    assert updated.snapshot_url is None
+    assert updated is None
 
     engine.dispose()
