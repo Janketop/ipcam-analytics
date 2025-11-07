@@ -187,6 +187,8 @@ def letterbox_resize(image: np.ndarray, size: int) -> PreprocessResult:
     pad_x = (size - new_w) // 2
     pad_y = (size - new_h) // 2
     canvas[pad_y : pad_y + new_h, pad_x : pad_x + new_w] = resized
+    canvas = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+    canvas = np.ascontiguousarray(canvas)
     input_tensor = canvas.transpose(2, 0, 1)[None].astype(np.float32) / 255.0
     return PreprocessResult(input_tensor=input_tensor, ratio=(scale, scale), pad=(pad_x, pad_y))
 
