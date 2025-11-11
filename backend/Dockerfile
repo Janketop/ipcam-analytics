@@ -1,15 +1,15 @@
-FROM nvidia/cuda:13.0.0-base-ubuntu22.04
+FROM nvidia/cuda:12.6.2-base-ubuntu22.04
 
 # Устанавливаем CUDA и cuDNN runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    cuda-cudart-13-0 \
-    cuda-libraries-13-0 \
-    cuda-nvrtc-13-0 \
-    libcublas-13-0 \
-    libcublas-dev-13-0 \
-    libcurand-13-0 \
-    libcurand-dev-13-0 \
-    libcudnn9-cuda-13 \
+    cuda-cudart-12-6 \
+    cuda-libraries-12-6 \
+    cuda-nvrtc-12-6 \
+    libcublas-12-6 \
+    libcublas-dev-12-6 \
+    libcurand-12-6 \
+    libcurand-dev-12-6 \
+    libcudnn9-cuda-12 \
     && rm -rf /var/lib/apt/lists/*
 
 # Добавляем в переменные окружения пути к CUDA библиотекам
@@ -38,7 +38,7 @@ RUN apt-get update \
 
 ENV PIP_DEFAULT_TIMEOUT=600 \
     PIP_RETRIES=10 \
-    PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu130
+    PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu126
 
 WORKDIR /app
 
@@ -75,6 +75,9 @@ COPY requirements.txt constraints.txt ./
 RUN set -eux; \
     python3 -m pip install --no-cache-dir --default-timeout=${PIP_DEFAULT_TIMEOUT} \
         --force-reinstall -r requirements.txt -c constraints.txt; \
+    # Отдельно убеждаемся, что установленный NumPy совпадает с пином из
+    # requirements/constraints: PyTorch 2.9.0 для CUDA 12.6 пока поддерживает
+    # только ветку 1.26.x, поэтому проверяем именно её.
     python3 - <<'PY'
 import numpy
 
@@ -136,7 +139,7 @@ RUN ldconfig
 RUN set -eux; \
     python3 -m pip uninstall -y opencv-python || true; \
     python3 -m pip install --no-cache-dir --force-reinstall \
-        -c constraints.txt opencv-python-headless==4.10.0.84
+        -c constraints.txt opencv-python-headless==4.9.0.80
 
 COPY . ./backend
 EXPOSE 8000
