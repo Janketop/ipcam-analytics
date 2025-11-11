@@ -81,7 +81,7 @@ RUN set -eux; \
     python3 - <<'PY'
 import numpy
 
-expected = "1.26.4"
+expected = "2.2.2"
 if numpy.__version__ != expected:
     raise SystemExit(
         f"Pinned NumPy version {expected} is required, got {numpy.__version__}. "
