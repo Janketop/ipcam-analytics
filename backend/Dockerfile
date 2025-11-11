@@ -75,18 +75,50 @@ COPY requirements.txt constraints.txt ./
 RUN set -eux; \
     python3 -m pip install --no-cache-dir --default-timeout=${PIP_DEFAULT_TIMEOUT} \
         --force-reinstall -r requirements.txt -c constraints.txt; \
-    # Отдельно убеждаемся, что установленный NumPy совпадает с пином из
-    # requirements/constraints: PyTorch 2.9.0 для CUDA 12.6 пока поддерживает
-    # только ветку 1.26.x, поэтому проверяем именно её.
+    # После установки проверяем, что NumPy совпадает с пином в файлах зависимостей.
+    # Так мы избегаем ручной синхронизации номеров версий при обновлениях.
     python3 - <<'PY'
+import pathlib
+import re
+
 import numpy
 
-expected = "2.2.2"
-if numpy.__version__ != expected:
+PIN_PATTERN = re.compile(r"^numpy==(?P<version>[^#\s]+)")
+
+
+def find_numpy_pin(path):
+    if not path.exists():
+        return None
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = PIN_PATTERN.match(line)
+        if match:
+            return match.group("version")
+    return None
+
+expected_version = None
+for candidate in (pathlib.Path("constraints.txt"), pathlib.Path("requirements.txt")):
+    expected_version = find_numpy_pin(candidate)
+    if expected_version:
+        break
+
+if expected_version is None:
     raise SystemExit(
-        f"Pinned NumPy version {expected} is required, got {numpy.__version__}. "
-        "Make sure the constraints are applied correctly."
+        "Не удалось найти закреплённую версию NumPy в requirements.txt или constraints.txt."
     )
+
+if numpy.__version__ != expected_version:
+    raise SystemExit(
+        "Pinned NumPy version {expected} is required, got {actual}. "
+        "Make sure the constraints are applied correctly.".format(
+            expected=expected_version,
+            actual=numpy.__version__,
+        )
+    )
+
+print(f"NumPy {numpy.__version__} соответствует пину {expected_version}.")
 PY
 # После установки Python-зависимостей переносим cuDNN 9 в системный путь,
 # чтобы onnxruntime-gpu мог подхватить libcudnn.so.9 во время запуска.
