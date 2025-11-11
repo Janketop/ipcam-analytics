@@ -1,6 +1,15 @@
 FROM nvidia/cuda:12.6.2-base-ubuntu22.04
 
-# Устанавливаем CUDA и cuDNN runtime
+# Устанавливаем полный набор инструментов CUDA и системный cuDNN, чтобы
+# фреймворки (PyTorch/ONNX) видели GPU внутри контейнера.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cuda-toolkit-12-6 \
+    libcudnn9-cuda-12 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Дополнительно подтягиваем основные runtime-библиотеки CUDA. Это снижает
+# размер итогового образа, потому что ставим только действительно нужные
+# компоненты.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cuda-cudart-12-6 \
     cuda-libraries-12-6 \
@@ -9,7 +18,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcublas-dev-12-6 \
     libcurand-12-6 \
     libcurand-dev-12-6 \
-    libcudnn9-cuda-12 \
     && rm -rf /var/lib/apt/lists/*
 
 # Добавляем в переменные окружения пути к CUDA библиотекам
