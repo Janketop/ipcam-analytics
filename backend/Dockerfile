@@ -75,6 +75,9 @@ COPY requirements.txt constraints.txt ./
 RUN set -eux; \
     python3 -m pip install --no-cache-dir --default-timeout=${PIP_DEFAULT_TIMEOUT} \
         --force-reinstall -r requirements.txt -c constraints.txt; \
+    # Отдельно убеждаемся, что установленный NumPy совпадает с пином из
+    # requirements/constraints: PyTorch 2.9.0 для CUDA 12.6 пока поддерживает
+    # только ветку 1.26.x, поэтому проверяем именно её.
     python3 - <<'PY'
 import numpy
 

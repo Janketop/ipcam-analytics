@@ -13,6 +13,8 @@ torchvision==0.24.0+cu126
 onnx==1.16.2
 onnxruntime-gpu==1.19.0
 ultralytics==8.3.226
+# PyTorch 2.9.0+cu126 ставится только с NumPy < 2.0, поэтому фиксируем
+# последнюю стабильную 1.26.x.
 numpy==1.26.4
 websockets==15.0.1
 Pillow==10.2.0
