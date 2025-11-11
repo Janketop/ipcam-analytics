@@ -136,7 +136,7 @@ RUN ldconfig
 RUN set -eux; \
     python3 -m pip uninstall -y opencv-python || true; \
     python3 -m pip install --no-cache-dir --force-reinstall \
-        -c constraints.txt opencv-python-headless==4.12.0.88
+        -c constraints.txt opencv-python-headless==4.9.0.80
 
 COPY . ./backend
 EXPOSE 8000
