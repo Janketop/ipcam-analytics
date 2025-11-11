@@ -22,15 +22,10 @@ services:
       - "${BACKEND_PORT}:8000"
     volumes:
       - ./backend:/app/backend
+    runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    devices:
-      - /dev/nvidiactl:/dev/nvidiactl
-      - /dev/nvidia-uvm:/dev/nvidia-uvm
-      - /dev/nvidia-uvm-tools:/dev/nvidia-uvm-tools
-      - /dev/nvidia-modeset:/dev/nvidia-modeset
-      - /dev/nvidia0:/dev/nvidia0
 
   frontend:
     build: ./frontend
