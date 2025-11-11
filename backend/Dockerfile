@@ -1,15 +1,15 @@
-FROM nvidia/cuda:13.0.0-base-ubuntu22.04
+FROM nvidia/cuda:12.6.2-base-ubuntu22.04
 
 # Устанавливаем CUDA и cuDNN runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    cuda-cudart-13-0 \
-    cuda-libraries-13-0 \
-    cuda-nvrtc-13-0 \
-    libcublas-13-0 \
-    libcublas-dev-13-0 \
-    libcurand-13-0 \
-    libcurand-dev-13-0 \
-    libcudnn9-cuda-13 \
+    cuda-cudart-12-6 \
+    cuda-libraries-12-6 \
+    cuda-nvrtc-12-6 \
+    libcublas-12-6 \
+    libcublas-dev-12-6 \
+    libcurand-12-6 \
+    libcurand-dev-12-6 \
+    libcudnn9-cuda-12 \
     && rm -rf /var/lib/apt/lists/*
 
 # Добавляем в переменные окружения пути к CUDA библиотекам
@@ -38,7 +38,7 @@ RUN apt-get update \
 
 ENV PIP_DEFAULT_TIMEOUT=600 \
     PIP_RETRIES=10 \
-    PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu130
+    PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu126
 
 WORKDIR /app
 
@@ -75,15 +75,50 @@ COPY requirements.txt constraints.txt ./
 RUN set -eux; \
     python3 -m pip install --no-cache-dir --default-timeout=${PIP_DEFAULT_TIMEOUT} \
         --force-reinstall -r requirements.txt -c constraints.txt; \
+    # После установки проверяем, что NumPy совпадает с пином в файлах зависимостей.
+    # Так мы избегаем ручной синхронизации номеров версий при обновлениях.
     python3 - <<'PY'
+import pathlib
+import re
+
 import numpy
 
-expected = "1.26.4"
-if numpy.__version__ != expected:
+PIN_PATTERN = re.compile(r"^numpy==(?P<version>[^#\s]+)")
+
+
+def find_numpy_pin(path):
+    if not path.exists():
+        return None
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = PIN_PATTERN.match(line)
+        if match:
+            return match.group("version")
+    return None
+
+expected_version = None
+for candidate in (pathlib.Path("constraints.txt"), pathlib.Path("requirements.txt")):
+    expected_version = find_numpy_pin(candidate)
+    if expected_version:
+        break
+
+if expected_version is None:
     raise SystemExit(
-        f"Pinned NumPy version {expected} is required, got {numpy.__version__}. "
-        "Make sure the constraints are applied correctly."
+        "Не удалось найти закреплённую версию NumPy в requirements.txt или constraints.txt."
     )
+
+if numpy.__version__ != expected_version:
+    raise SystemExit(
+        "Pinned NumPy version {expected} is required, got {actual}. "
+        "Make sure the constraints are applied correctly.".format(
+            expected=expected_version,
+            actual=numpy.__version__,
+        )
+    )
+
+print(f"NumPy {numpy.__version__} соответствует пину {expected_version}.")
 PY
 # После установки Python-зависимостей переносим cuDNN 9 в системный путь,
 # чтобы onnxruntime-gpu мог подхватить libcudnn.so.9 во время запуска.
@@ -136,7 +171,7 @@ RUN ldconfig
 RUN set -eux; \
     python3 -m pip uninstall -y opencv-python || true; \
     python3 -m pip install --no-cache-dir --force-reinstall \
-        -c constraints.txt opencv-python-headless==4.10.0.84
+        -c constraints.txt opencv-python-headless==4.9.0.80
 
 COPY . ./backend
 EXPOSE 8000
