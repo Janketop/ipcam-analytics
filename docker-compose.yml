@@ -22,13 +22,10 @@ services:
       - "${BACKEND_PORT}:8000"
     volumes:
       - ./backend:/app/backend
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    device_requests:
+      - driver: nvidia
+        count: all
+        capabilities: [gpu]
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
