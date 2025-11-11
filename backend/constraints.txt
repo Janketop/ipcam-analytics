@@ -1,11 +1,11 @@
-# Pin CUDA 13.0 wheels that match the extra PyTorch index configured in the Dockerfile.
-torch==2.6.0+cu130
-torchvision==0.21.0+cu130
-dlib==19.24.4
-numpy==1.26.4
-scikit-learn==1.5.2
-scipy==1.11.4
+# Pin CUDA 12.6 wheels that match the extra PyTorch index configured in the Dockerfile.
+torch==2.9.0+cu126
+torchvision==0.24.0+cu126
+dlib==20.0.0
+numpy==2.2.2
+scikit-learn==1.7.2
+scipy==1.16.3
 face-recognition==1.3.0
-# Match the cuDNN version required by torch 2.6.0+cu130.
-nvidia-cudnn-cu13==9.2.0.74
+# Match the cuDNN version required by torch 2.9.0+cu126.
+nvidia-cudnn-cu12==9.15.0.57
 setuptools<81
