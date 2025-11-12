@@ -46,7 +46,7 @@ RUN apt-get update \
 
 ENV PIP_DEFAULT_TIMEOUT=600 \
     PIP_RETRIES=10 \
-    PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu126
+    PIP_EXTRA_INDEX_URL="https://download.pytorch.org/whl/cu126"
 
 WORKDIR /app
 
