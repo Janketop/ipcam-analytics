@@ -8,8 +8,9 @@ pydantic-settings==2.11.0
 python-dotenv==1.2.1
 opencv-python-headless==4.9.0.80
 nvidia-cudnn-cu12==9.10.2.21
-torch==2.5.1+cu126
-torchvision==0.20.1+cu126
+# Версии torch и torchvision задаются в constraints.txt,
+# чтобы избежать конфликтов между CPU- и CUDA-сборками.
+# См. backend/constraints.txt для фактических пинов.
 onnx==1.16.2
 onnxruntime-gpu==1.19.0
 ultralytics==8.3.226
