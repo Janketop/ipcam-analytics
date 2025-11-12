@@ -1,6 +1,6 @@
-# Pin CUDA 12.6 wheels that match the extra PyTorch index configured in the Dockerfile.
-torch==2.5.1+cu126
-torchvision==0.20.1+cu126
+# PyTorch wheels из основного PyPI содержат CPU-реализацию, что совместимо с окружением сборки.
+torch==2.5.1
+torchvision==0.20.1
 dlib==20.0.0
 # PyTorch 2.5.1 для CUDA 12.6 пока не совместим с NumPy 2.x,
 # поэтому держим последнюю стабильную ветку 1.26.x.
